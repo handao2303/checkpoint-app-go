@@ -8,13 +8,14 @@ PROJECT_ID  ?= $(shell gcloud config get-value project 2>/dev/null)
 BIN         ?= bin/server
 PORT        ?= 8080
 # Frontend origin(s) allowed by CORS in production (override on `make deploy`).
-CORS_ORIGINS ?= http://localhost:5173
+CORS_ORIGINS ?= http://localhost:5173,https://checkpoint-web.dev-hongquan.workers.dev
 
 # DATABASE_URL pulled from .env (value after the first '='), used by migrate.
 DB_URL := $(shell [ -f .env ] && grep -E '^DATABASE_URL=' .env | cut -d '=' -f2- | sed 's/[[:space:]]*\#.*//')
 
-# Secrets that the Cloud Run service reads (mapped to Secret Manager).
-SECRET_KEYS := DATABASE_URL JWT_SECRET SUPABASE_URL \
+# Config keys read from .env and passed to Cloud Run as plain env vars
+# (ENV and CORS_ALLOWED_ORIGINS are set separately by the deploy target).
+DEPLOY_KEYS := DATABASE_URL JWT_SECRET JWT_ACCESS_TTL JWT_REFRESH_TTL SUPABASE_URL \
 	R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_ACCESS_KEY_SECRET R2_BUCKET_NAME R2_PUBLIC_URL
 
 MIGRATE_VERSION ?= v4.18.1
@@ -24,7 +25,7 @@ MIGRATE := $(shell command -v migrate 2>/dev/null || echo "$(shell go env GOPATH
 .DEFAULT_GOAL := help
 .PHONY: help setup env tidy fmt vet lint test test-cover run dev build clean \
 	docker-build docker-run migrate-install migrate-up migrate-down migrate-create \
-	migrate-force gcp-enable gcp-secrets deploy logs
+	migrate-force gcp-enable deploy secrets-delete logs
 
 ## ----------------------------------------------------------------------
 ## General
@@ -114,32 +115,34 @@ migrate-force: ## Force a dirty migration version: make migrate-force version=1
 
 gcp-enable: ## Enable required GCP APIs (run once)
 	gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-		secretmanager.googleapis.com artifactregistry.googleapis.com \
-		--project $(PROJECT_ID)
+		artifactregistry.googleapis.com --project $(PROJECT_ID)
 
-gcp-secrets: ## Push secrets from .env into Secret Manager (+ grant Cloud Run access)
-	@PROJECT_NUMBER=$$(gcloud projects describe $(PROJECT_ID) --format='value(projectNumber)'); \
-	SA="$$PROJECT_NUMBER-compute@developer.gserviceaccount.com"; \
-	for key in $(SECRET_KEYS); do \
-	  val=$$(grep -E "^$$key=" .env | cut -d '=' -f2- | sed 's/[[:space:]]*#.*//' | xargs); \
-	  if [ -z "$$val" ]; then echo "skip $$key (empty)"; continue; fi; \
-	  if gcloud secrets describe $$key --project $(PROJECT_ID) >/dev/null 2>&1; then \
-	    printf '%s' "$$val" | gcloud secrets versions add $$key --data-file=- --project $(PROJECT_ID) >/dev/null; \
-	    echo "updated $$key"; \
-	  else \
-	    printf '%s' "$$val" | gcloud secrets create $$key --data-file=- --replication-policy=automatic --project $(PROJECT_ID) >/dev/null; \
-	    echo "created $$key"; \
-	  fi; \
-	  gcloud secrets add-iam-policy-binding $$key --member="serviceAccount:$$SA" \
-	    --role=roles/secretmanager.secretAccessor --project $(PROJECT_ID) >/dev/null 2>&1 || true; \
-	done
-
-deploy: ## Build & deploy to Cloud Run (uses Secret Manager)
+deploy: ## Build & deploy to Cloud Run (env vars from .env — no Secret Manager)
+	@TMP=$$(mktemp); \
+	{ \
+	  printf 'ENV: "production"\n'; \
+	  printf 'CORS_ALLOWED_ORIGINS: "%s"\n' '$(CORS_ORIGINS)'; \
+	  for key in $(DEPLOY_KEYS); do \
+	    val=$$(grep -E "^$$key=" .env | cut -d '=' -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
+	    esc=$$(printf '%s' "$$val" | sed -E 's/\\/\\\\/g; s/"/\\"/g'); \
+	    printf '%s: "%s"\n' "$$key" "$$esc"; \
+	  done; \
+	} > $$TMP; \
+	gcloud run services update $(SERVICE) --project $(PROJECT_ID) --region $(REGION) \
+		--clear-secrets >/dev/null 2>&1 || true; \
 	gcloud run deploy $(SERVICE) \
 		--project $(PROJECT_ID) --region $(REGION) \
 		--source . --allow-unauthenticated --port 8080 \
-		--set-env-vars ENV=production,JWT_ACCESS_TTL=15m,JWT_REFRESH_TTL=168h,CORS_ALLOWED_ORIGINS=$(CORS_ORIGINS) \
-		--set-secrets "$$(echo $(SECRET_KEYS) | tr ' ' '\n' | sed 's/.*/&=&:latest/' | paste -sd, -)"
+		--env-vars-file $$TMP; \
+	status=$$?; rm -f $$TMP; exit $$status
+
+secrets-delete: ## Delete ALL Secret Manager secrets created earlier (stop incurring cost)
+	@for key in DATABASE_URL JWT_SECRET SUPABASE_URL SUPABASE_JWT_SECRET \
+		R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_ACCESS_KEY_SECRET R2_BUCKET_NAME R2_PUBLIC_URL; do \
+	  if gcloud secrets describe $$key --project $(PROJECT_ID) >/dev/null 2>&1; then \
+	    gcloud secrets delete $$key --project $(PROJECT_ID) --quiet && echo "deleted $$key"; \
+	  fi; \
+	done
 
 logs: ## Tail Cloud Run logs
 	gcloud run services logs read $(SERVICE) --project $(PROJECT_ID) --region $(REGION) --limit 50

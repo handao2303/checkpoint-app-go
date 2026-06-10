@@ -89,9 +89,8 @@ make docker-build && make docker-run
 gcloud auth login
 gcloud config set project <YOUR_PROJECT_ID>
 
-make gcp-enable                # enable run, cloudbuild, secretmanager, artifactregistry
-make gcp-secrets               # push every value from .env into Secret Manager
-make deploy                    # build from Dockerfile + deploy, wired to those secrets
+make gcp-enable                # enable run, cloudbuild, artifactregistry
+make deploy                    # build from Dockerfile + deploy, env vars from .env
 ```
 
 `make deploy` prints a `https://checkpoint-api-xxxx.run.app` URL. Test it:
@@ -101,12 +100,19 @@ curl https://checkpoint-api-xxxx.run.app/health
 make logs                      # tail logs if something is off
 ```
 
-The Cloud Run service reads `DATABASE_URL`, `JWT_SECRET`, `SUPABASE_URL`,
-`R2_*` from Secret Manager (set by `make gcp-secrets`) and `ENV`, `JWT_*_TTL` as
-plain env vars. `PORT` is injected by Cloud Run automatically.
+**Config injection:** `make deploy` reads every value from `.env`
+(`DATABASE_URL`, `JWT_SECRET`, `SUPABASE_URL`, `JWT_*_TTL`, `R2_*`), forces
+`ENV=production`, and sets `CORS_ALLOWED_ORIGINS` from the `CORS_ORIGINS` make
+var. It passes them via `--env-vars-file` (a temp file, auto-removed) so values
+with special characters survive. `PORT` is injected by Cloud Run automatically.
 
-> Re-deploy after code changes: `make deploy`.
-> Changed a secret in `.env`? `make gcp-secrets` then `make deploy`.
+> We pass config as **plain Cloud Run env vars, not Secret Manager** — $0 cost
+> for a personal project (trade-off: values are visible in the Cloud Run console).
+> If you previously created Secret Manager secrets, delete them with
+> `make secrets-delete` to stop the per-secret charge.
+
+> Re-deploy after code or `.env` changes: `make deploy`.
+> Override the allowed origins: `make deploy CORS_ORIGINS=https://your.app`.
 
 ---
 
@@ -114,8 +120,7 @@ plain env vars. `PORT` is injected by Cloud Run automatically.
 
 `.github/workflows/deploy.yml` runs `go vet` + `go test`, then deploys on push to
 `main`. Add these repo secrets: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_SA_KEY`
-(service-account JSON with Cloud Run + Artifact Registry + Secret Manager access),
-`CLOUD_RUN_SERVICE`.
+(service-account JSON with Cloud Run + Artifact Registry access), `CLOUD_RUN_SERVICE`.
 
 ---
 
