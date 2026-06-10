@@ -146,7 +146,7 @@ jobs:
           runtime_env="$RUNNER_TEMP/runtime-env.json"
 
           jq -n \
-            --arg ENV "production" \
+            --arg APP_ENV "production" \
             --arg CORS_ALLOWED_ORIGINS "$CORS_ALLOWED_ORIGINS" \
             --arg DATABASE_URL "$DATABASE_URL" \
             --arg JWT_SECRET "$JWT_SECRET" \
@@ -162,7 +162,7 @@ jobs:
             --arg NOMINATIM_BASE_URL "$NOMINATIM_BASE_URL" \
             --arg NOMINATIM_USER_AGENT "$NOMINATIM_USER_AGENT" \
             '{
-              ENV: $ENV,
+              ENV: $APP_ENV,
               CORS_ALLOWED_ORIGINS: $CORS_ALLOWED_ORIGINS,
               DATABASE_URL: $DATABASE_URL,
               JWT_SECRET: $JWT_SECRET,
@@ -178,6 +178,11 @@ jobs:
               NOMINATIM_BASE_URL: $NOMINATIM_BASE_URL,
               NOMINATIM_USER_AGENT: $NOMINATIM_USER_AGENT
             }' > "$runtime_env"
+
+          if ! jq -e 'all(.[]; type == "string")' "$runtime_env" >/dev/null; then
+            echo "::error::Runtime environment file contains a non-string value"
+            exit 1
+          fi
 
           chmod 600 "$runtime_env"
 
