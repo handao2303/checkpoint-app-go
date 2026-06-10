@@ -28,13 +28,14 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 }
 
 const userColumns = `id, supabase_id, email, username, display_name, avatar_url, bio,
-	role, total_xp, level, checkpoint_count, journey_count, created_at, updated_at`
+	role, is_anonymous, total_xp, level, checkpoint_count, journey_count, created_at, updated_at`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.SupabaseID, &u.Email, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio,
-		&u.Role, &u.TotalXP, &u.Level, &u.CheckpointCount, &u.JourneyCount, &u.CreatedAt, &u.UpdatedAt,
+		&u.Role, &u.IsAnonymous, &u.TotalXP, &u.Level, &u.CheckpointCount, &u.JourneyCount,
+		&u.CreatedAt, &u.UpdatedAt,
 	)
 	return &u, err
 }
@@ -74,10 +75,10 @@ func getUser(row pgx.Row, op string) (*User, error) {
 // CreateUser inserts a new user and returns the stored row.
 func (r *Repository) CreateUser(ctx context.Context, p CreateUserParams) (*User, error) {
 	row := r.db.QueryRow(ctx,
-		`INSERT INTO users (supabase_id, email, username, role)
-		 VALUES ($1, $2, $3, $4)
+		`INSERT INTO users (supabase_id, email, username, role, is_anonymous)
+		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING `+userColumns,
-		p.SupabaseID, p.Email, p.Username, p.Role)
+		p.SupabaseID, p.Email, p.Username, p.Role, p.IsAnonymous)
 	u, err := scanUser(row)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)

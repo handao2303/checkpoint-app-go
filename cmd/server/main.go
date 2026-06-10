@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
@@ -60,6 +61,12 @@ func run() error {
 	identityHandler := identity.NewHandler(identitySvc)
 
 	r := chi.NewRouter()
+	r.Use(cors.Handler(cors.Options{
+		AllowedOrigins: cfg.corsOrigins,
+		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Authorization", "Content-Type"},
+		MaxAge:         300,
+	}))
 	r.Use(chimw.RequestID, chimw.Logger, chimw.Recoverer)
 	r.Use(chimw.Timeout(30 * time.Second))
 
@@ -104,6 +111,7 @@ type config struct {
 	databaseURL string
 	jwtSecret   string
 	supabaseURL string
+	corsOrigins []string
 	accessTTL   time.Duration
 	refreshTTL  time.Duration
 	r2          storage.R2Config
@@ -116,6 +124,7 @@ func loadConfig() (config, error) {
 		databaseURL: os.Getenv("DATABASE_URL"),
 		jwtSecret:   os.Getenv("JWT_SECRET"),
 		supabaseURL: os.Getenv("SUPABASE_URL"),
+		corsOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")),
 		r2: storage.R2Config{
 			AccountID: os.Getenv("R2_ACCOUNT_ID"),
 			AccessKey: os.Getenv("R2_ACCESS_KEY_ID"),
@@ -143,6 +152,17 @@ func loadConfig() (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// splitCSV splits a comma-separated env value, trimming blanks.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(key, fallback string) string {

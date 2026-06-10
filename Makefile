@@ -7,6 +7,8 @@ REGION      ?= asia-southeast1
 PROJECT_ID  ?= $(shell gcloud config get-value project 2>/dev/null)
 BIN         ?= bin/server
 PORT        ?= 8080
+# Frontend origin(s) allowed by CORS in production (override on `make deploy`).
+CORS_ORIGINS ?= http://localhost:5173,https://checkpoint-web.dev-hongquan.workers.dev
 
 # DATABASE_URL pulled from .env (value after the first '='), used by migrate.
 DB_URL := $(shell [ -f .env ] && grep -E '^DATABASE_URL=' .env | cut -d '=' -f2- | sed 's/[[:space:]]*\#.*//')
@@ -136,7 +138,7 @@ deploy: ## Build & deploy to Cloud Run (uses Secret Manager)
 	gcloud run deploy $(SERVICE) \
 		--project $(PROJECT_ID) --region $(REGION) \
 		--source . --allow-unauthenticated --port 8080 \
-		--set-env-vars ENV=production,JWT_ACCESS_TTL=15m,JWT_REFRESH_TTL=168h \
+		--set-env-vars ENV=production,JWT_ACCESS_TTL=15m,JWT_REFRESH_TTL=168h,CORS_ALLOWED_ORIGINS=$(CORS_ORIGINS) \
 		--set-secrets "$$(echo $(SECRET_KEYS) | tr ' ' '\n' | sed 's/.*/&=&:latest/' | paste -sd, -)"
 
 logs: ## Tail Cloud Run logs

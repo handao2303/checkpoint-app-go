@@ -11,12 +11,13 @@ import (
 type User struct {
 	ID              string    `json:"id"`
 	SupabaseID      string    `json:"-"`
-	Email           string    `json:"email"`
+	Email           *string   `json:"email,omitempty"` // nil for anonymous users
 	Username        string    `json:"username"`
 	DisplayName     *string   `json:"display_name,omitempty"`
 	AvatarURL       *string   `json:"avatar_url,omitempty"`
 	Bio             *string   `json:"bio,omitempty"`
 	Role            string    `json:"role"`
+	IsAnonymous     bool      `json:"is_anonymous"`
 	TotalXP         int       `json:"total_xp"`
 	Level           int       `json:"level"`
 	CheckpointCount int       `json:"checkpoint_count"`
@@ -50,8 +51,9 @@ type RefreshToken struct {
 
 // CreateUserParams carries the fields needed to provision a new user.
 type CreateUserParams struct {
-	SupabaseID string
-	Email      string
-	Username   string
-	Role       string
+	SupabaseID  string
+	Email       *string // nil for anonymous users
+	Username    string
+	Role        string
+	IsAnonymous bool
 }

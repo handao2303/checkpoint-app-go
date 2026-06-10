@@ -36,9 +36,13 @@ func NewTokenManager(secret string, accessTTL, refreshTTL time.Duration) *TokenM
 // GenerateAccess issues a short-lived signed access token for u.
 func (m *TokenManager) GenerateAccess(u *User) (string, error) {
 	now := time.Now()
+	email := ""
+	if u.Email != nil {
+		email = *u.Email
+	}
 	claims := Claims{
 		UserID:   u.ID,
-		Email:    u.Email,
+		Email:    email,
 		Username: u.Username,
 		Role:     u.Role,
 		RegisteredClaims: jwt.RegisteredClaims{

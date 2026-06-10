@@ -150,12 +150,17 @@ func (s *Service) issueTokens(ctx context.Context, u *User) (*TokenPair, error) 
 // rare username collision and tolerating a concurrent provision of the same
 // Supabase id.
 func (s *Service) provisionUser(ctx context.Context, claims *supabase.Claims) (*User, error) {
+	var email *string
+	if claims.Email != "" {
+		email = &claims.Email
+	}
 	for attempt := 0; attempt < 5; attempt++ {
 		u, err := s.repo.CreateUser(ctx, CreateUserParams{
-			SupabaseID: claims.Subject,
-			Email:      claims.Email,
-			Username:   generateUsername(claims.Email),
-			Role:       "user",
+			SupabaseID:  claims.Subject,
+			Email:       email,
+			Username:    generateUsername(claims.Email),
+			Role:        "user",
+			IsAnonymous: claims.IsAnonymous,
 		})
 		if err == nil {
 			return u, nil

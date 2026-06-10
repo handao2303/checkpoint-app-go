@@ -16,8 +16,9 @@ import (
 // Claims are the subset of Supabase JWT claims we use. Subject (sub) is the
 // Supabase user id.
 type Claims struct {
-	Email string `json:"email"`
-	Role  string `json:"role"`
+	Email       string `json:"email"`
+	Role        string `json:"role"`
+	IsAnonymous bool   `json:"is_anonymous"`
 	jwt.RegisteredClaims
 }
 
