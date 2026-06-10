@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/quanluon/checkpoint-app/internal/place"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
 )
 
@@ -15,26 +16,33 @@ import (
 // caller's, for owner-scoped operations).
 var ErrNotFound = errors.New("checkpoint not found")
 
+// placeResolver matches/creates a place within a transaction (implemented by
+// internal/place). Kept as an interface for decoupling and testing.
+type placeResolver interface {
+	ResolveInTx(ctx context.Context, tx pgx.Tx, p place.ResolveParams) (string, error)
+}
+
 // Repository is the Postgres data layer for checkpoints.
 type Repository struct {
 	db        *pgxpool.Pool
 	mediaBase string // R2 public base URL, prepended to image keys on read
+	places    placeResolver
 }
 
 // NewRepository builds a checkpoint repository over a pgx pool. mediaBase is the
-// public base URL used to turn stored image keys into full URLs.
-func NewRepository(db *pgxpool.Pool, mediaBase string) *Repository {
-	return &Repository{db: db, mediaBase: mediaBase}
+// public base URL for image keys; places resolves a check-in to a Place.
+func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver) *Repository {
+	return &Repository{db: db, mediaBase: mediaBase, places: places}
 }
 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
-	xp_awarded, created_at, updated_at`
+	place_id, xp_awarded, created_at, updated_at`
 
 func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 	var c Checkpoint
 	err := row.Scan(
 		&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-		&c.Address, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
+		&c.Address, &c.PlaceID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
 	)
 	return &c, err
 }
@@ -50,13 +58,32 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	// Rollback is a no-op once Commit has succeeded.
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Resolve the place (match a nearby one with a similar name, or create it),
+	// unless the client checked in to a specific place.
+	placeID := p.PlaceID
+	if placeID == nil {
+		id, err := r.places.ResolveInTx(ctx, tx, place.ResolveParams{
+			Name: p.Name, Category: p.Category, Lat: p.Lat, Lng: p.Lng, Address: p.Address,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("resolve place: %w", err)
+		}
+		placeID = &id
+	}
+
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, xp_awarded)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, place_id, xp_awarded)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING `+cpColumns,
-		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.XPReward))
+		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, placeID, p.XPReward))
 	if err != nil {
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE places SET checkin_count = checkin_count + 1, updated_at = NOW() WHERE id = $1`,
+		placeID); err != nil {
+		return nil, fmt.Errorf("bump place checkin_count: %w", err)
 	}
 
 	var totalXP int

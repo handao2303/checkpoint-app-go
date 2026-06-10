@@ -155,3 +155,16 @@ func TestServiceCreate_Validation(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceCreate_ForwardsPlaceID(t *testing.T) {
+	repo := &fakeRepo{}
+	pid := "place-123"
+	_, err := NewService(repo, nil, nil).Create(
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, PlaceID: &pid})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.lastCreate.PlaceID == nil || *repo.lastCreate.PlaceID != pid {
+		t.Errorf("PlaceID not forwarded: %v", repo.lastCreate.PlaceID)
+	}
+}

@@ -23,6 +23,7 @@ import (
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/geocode"
 	"github.com/quanluon/checkpoint-app/internal/identity"
+	"github.com/quanluon/checkpoint-app/internal/place"
 	appmw "github.com/quanluon/checkpoint-app/pkg/middleware"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
@@ -64,7 +65,10 @@ func run() error {
 	identityHandler := identity.NewHandler(identitySvc)
 
 	geocoder := geocode.NewClient(cfg.geocoder)
-	checkpointHandler := checkpoint.NewHandler(checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL), r2, geocoder))
+	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
+	placeHandler := place.NewHandler(place.NewService(placeRepo))
+	checkpointHandler := checkpoint.NewHandler(
+		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo), r2, geocoder))
 
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
@@ -81,6 +85,7 @@ func run() error {
 	})
 	identityHandler.Register(r, appmw.Auth(tokens))
 	checkpointHandler.Register(r, appmw.Auth(tokens))
+	placeHandler.Register(r, appmw.Auth(tokens))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,

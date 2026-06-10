@@ -13,6 +13,7 @@ type Checkpoint struct {
 	Lat       float64   `json:"lat"`
 	Lng       float64   `json:"lng"`
 	Address   *string   `json:"address,omitempty"`
+	PlaceID   *string   `json:"place_id,omitempty"`
 	XPAwarded int       `json:"xp_awarded"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -28,6 +29,7 @@ type CreateParams struct {
 	Lat      float64
 	Lng      float64
 	Address  *string
+	PlaceID  *string // optional: check-in to a specific place (else resolved)
 	XPReward int
 }
 

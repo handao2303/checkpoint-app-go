@@ -1,0 +1,2 @@
+ALTER TABLE checkpoints DROP COLUMN IF EXISTS place_id;
+DROP TABLE IF EXISTS places;

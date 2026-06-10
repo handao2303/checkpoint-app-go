@@ -70,6 +70,7 @@ type Input struct {
 	Lat      float64
 	Lng      float64
 	Address  *string
+	PlaceID  *string
 }
 
 // Create validates input and creates a checkpoint, awarding XP.
@@ -114,6 +115,7 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		Lat:      in.Lat,
 		Lng:      in.Lng,
 		Address:  address,
+		PlaceID:  in.PlaceID,
 		XPReward: checkinXP,
 	})
 }

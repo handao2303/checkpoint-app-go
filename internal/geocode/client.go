@@ -111,7 +111,7 @@ func (c *Client) Reverse(ctx context.Context, lat, lng float64) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("reverse geocode request: %w", err)
 	}
-	defer res.Body.Close()
+	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("reverse geocode status: %s", res.Status)
 	}

@@ -47,6 +47,7 @@ type createRequest struct {
 	Lat      float64 `json:"lat"`
 	Lng      float64 `json:"lng"`
 	Address  *string `json:"address"`
+	PlaceID  *string `json:"place_id"`
 }
 
 // Create handles a check-in.
