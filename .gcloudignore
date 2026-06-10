@@ -1,0 +1,9 @@
+# Files NOT uploaded to Cloud Build when deploying with `gcloud run deploy --source`.
+.git
+.github
+.gitignore
+bin
+*.out
+.env
+.env.*
+!.env.example

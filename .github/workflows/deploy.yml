@@ -1,0 +1,45 @@
+# Deploy the Go backend to GCP Cloud Run.
+#
+# Required repo secrets (Settings → Secrets and variables → Actions):
+#   GCP_PROJECT_ID        - your GCP project id
+#   GCP_REGION            - e.g. asia-southeast1
+#   GCP_SA_KEY            - JSON key of a service account with Cloud Run + Artifact Registry access
+#   CLOUD_RUN_SERVICE     - Cloud Run service name, e.g. checkpoint-api
+# Runtime env (DATABASE_URL, JWT_SECRET, ...) should be set on the Cloud Run
+# service via Secret Manager, not here.
+
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - run: go vet ./...
+      - run: go test ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Build & deploy to Cloud Run
+        run: |
+          gcloud run deploy "${{ secrets.CLOUD_RUN_SERVICE }}" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --region "${{ secrets.GCP_REGION }}" \
+            --source . \
+            --allow-unauthenticated \
+            --port 8080

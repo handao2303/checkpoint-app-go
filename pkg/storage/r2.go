@@ -1,0 +1,153 @@
+// Package storage provides a Cloudflare R2 object-storage client.
+//
+// R2 is S3-compatible, so this is a minimal AWS Signature V4 PutObject
+// implementation using only the standard library — no AWS SDK dependency.
+package storage
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+const (
+	r2Region  = "auto"
+	r2Service = "s3"
+)
+
+// R2Config holds the credentials and bucket settings for an R2 client.
+type R2Config struct {
+	AccountID string
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	PublicURL string // public base URL objects are served from
+}
+
+// R2 uploads objects to a Cloudflare R2 bucket.
+type R2 struct {
+	cfg    R2Config
+	host   string
+	client *http.Client
+}
+
+// NewR2 builds an R2 client.
+func NewR2(cfg R2Config) *R2 {
+	cfg.PublicURL = strings.TrimRight(cfg.PublicURL, "/")
+	return &R2{
+		cfg:    cfg,
+		host:   cfg.AccountID + ".r2.cloudflarestorage.com",
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+// Upload PUTs body under key and returns the object's public URL. The whole
+// body is buffered because SigV4 signs a hash of the payload.
+func (c *R2) Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error) {
+	payload, err := io.ReadAll(body)
+	if err != nil {
+		return "", fmt.Errorf("read upload body: %w", err)
+	}
+
+	canonicalURI := "/" + c.cfg.Bucket + "/" + uriEncodePath(key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		"https://"+c.host+canonicalURI, bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("build upload request: %w", err)
+	}
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	payloadHash := hexSHA256(payload)
+
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.ContentLength = int64(len(payload))
+	req.Header.Set("Authorization",
+		c.authorization(canonicalURI, contentType, payloadHash, amzDate, dateStamp))
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("upload to r2: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return "", fmt.Errorf("r2 upload failed: status %d: %s", resp.StatusCode, msg)
+	}
+	return c.cfg.PublicURL + "/" + key, nil
+}
+
+// authorization builds the SigV4 Authorization header value for a PutObject.
+func (c *R2) authorization(canonicalURI, contentType, payloadHash, amzDate, dateStamp string) string {
+	const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date"
+	canonicalHeaders := "content-type:" + contentType + "\n" +
+		"host:" + c.host + "\n" +
+		"x-amz-content-sha256:" + payloadHash + "\n" +
+		"x-amz-date:" + amzDate + "\n"
+
+	canonicalRequest := strings.Join([]string{
+		http.MethodPut, canonicalURI, "", canonicalHeaders, signedHeaders, payloadHash,
+	}, "\n")
+
+	scope := dateStamp + "/" + r2Region + "/" + r2Service + "/aws4_request"
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, scope, hexSHA256([]byte(canonicalRequest)),
+	}, "\n")
+
+	key := hmacSHA256([]byte("AWS4"+c.cfg.SecretKey), []byte(dateStamp))
+	key = hmacSHA256(key, []byte(r2Region))
+	key = hmacSHA256(key, []byte(r2Service))
+	key = hmacSHA256(key, []byte("aws4_request"))
+	signature := hex.EncodeToString(hmacSHA256(key, []byte(stringToSign)))
+
+	return "AWS4-HMAC-SHA256 " +
+		"Credential=" + c.cfg.AccessKey + "/" + scope + ", " +
+		"SignedHeaders=" + signedHeaders + ", " +
+		"Signature=" + signature
+}
+
+func hmacSHA256(key, data []byte) []byte {
+	h := hmac.New(sha256.New, key)
+	h.Write(data)
+	return h.Sum(nil)
+}
+
+func hexSHA256(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// uriEncodePath percent-encodes each path segment per RFC 3986 while keeping
+// the "/" separators, as required by S3's canonical URI.
+func uriEncodePath(p string) string {
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		segs[i] = uriEncode(s)
+	}
+	return strings.Join(segs, "/")
+}
+
+func uriEncode(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9',
+			c == '-', c == '_', c == '.', c == '~':
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "%%%02X", c)
+		}
+	}
+	return b.String()
+}

@@ -1,0 +1,10 @@
+.git
+.github
+bin
+*.out
+.env
+.env.*
+!.env.example
+README.md
+DEPLOY.md
+Makefile
