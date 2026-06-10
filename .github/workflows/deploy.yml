@@ -1,45 +1,222 @@
-# Deploy the Go backend to GCP Cloud Run.
-#
-# Required repo secrets (Settings → Secrets and variables → Actions):
-#   GCP_PROJECT_ID        - your GCP project id
-#   GCP_REGION            - e.g. asia-southeast1
-#   GCP_SA_KEY            - JSON key of a service account with Cloud Run + Artifact Registry access
-#   CLOUD_RUN_SERVICE     - Cloud Run service name, e.g. checkpoint-api
-# Runtime env (DATABASE_URL, JWT_SECRET, ...) should be set on the Cloud Run
-# service via Secret Manager, not here.
-
-name: deploy
+name: Deploy Backend
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_migrations:
+        description: Run database migrations before deploying
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-production
+  cancel-in-progress: false
 
 jobs:
   test:
+    name: Test
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
         with:
           go-version: "1.25"
-      - run: go vet ./...
-      - run: go test ./...
+          cache: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -shuffle=on ./...
+
+  migrate:
+    name: Migrate database
+    needs: test
+    if: github.event_name == 'workflow_dispatch' && inputs.run_migrations
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Validate migration configuration
+        shell: bash
+        run: |
+          if [[ -z "$DATABASE_URL" ]]; then
+            echo "::error::Missing repository secret: DATABASE_URL"
+            exit 1
+          fi
+
+      - name: Install migrate
+        run: go install -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+
+      - name: Run migrations
+        run: migrate -path migrations -database "$DATABASE_URL" up
 
   deploy:
-    needs: test
+    name: Deploy to Cloud Run
+    needs: [test, migrate]
+    if: always() && needs.test.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      CLOUD_RUN_SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_ACCESS_KEY_SECRET: ${{ secrets.R2_ACCESS_KEY_SECRET }}
+      CORS_ALLOWED_ORIGINS: ${{ vars.CORS_ALLOWED_ORIGINS }}
+      JWT_ACCESS_TTL: ${{ vars.JWT_ACCESS_TTL }}
+      JWT_REFRESH_TTL: ${{ vars.JWT_REFRESH_TTL }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+      R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
+      R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL }}
+      GEOCODER_ENABLED: ${{ vars.GEOCODER_ENABLED }}
+      NOMINATIM_BASE_URL: ${{ vars.NOMINATIM_BASE_URL }}
+      NOMINATIM_USER_AGENT: ${{ vars.NOMINATIM_USER_AGENT }}
+
+    outputs:
+      service_url: ${{ steps.service.outputs.url }}
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Build & deploy to Cloud Run
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate deployment configuration
+        shell: bash
         run: |
-          gcloud run deploy "${{ secrets.CLOUD_RUN_SERVICE }}" \
-            --project "${{ secrets.GCP_PROJECT_ID }}" \
-            --region "${{ secrets.GCP_REGION }}" \
+          required=(
+            GCP_PROJECT_ID GCP_REGION CLOUD_RUN_SERVICE
+            GCP_WORKLOAD_IDENTITY_PROVIDER GCP_SERVICE_ACCOUNT
+            DATABASE_URL JWT_SECRET CORS_ALLOWED_ORIGINS
+            JWT_ACCESS_TTL JWT_REFRESH_TTL SUPABASE_URL
+            GEOCODER_ENABLED NOMINATIM_BASE_URL NOMINATIM_USER_AGENT
+          )
+
+          missing=()
+          for name in "${required[@]}"; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            printf '::error::Missing GitHub variables/secrets: %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Create runtime environment file
+        shell: bash
+        run: |
+          runtime_env="$RUNNER_TEMP/runtime-env.json"
+
+          jq -n \
+            --arg ENV "production" \
+            --arg CORS_ALLOWED_ORIGINS "$CORS_ALLOWED_ORIGINS" \
+            --arg DATABASE_URL "$DATABASE_URL" \
+            --arg JWT_SECRET "$JWT_SECRET" \
+            --arg JWT_ACCESS_TTL "$JWT_ACCESS_TTL" \
+            --arg JWT_REFRESH_TTL "$JWT_REFRESH_TTL" \
+            --arg SUPABASE_URL "$SUPABASE_URL" \
+            --arg R2_ACCOUNT_ID "$R2_ACCOUNT_ID" \
+            --arg R2_ACCESS_KEY_ID "$R2_ACCESS_KEY_ID" \
+            --arg R2_ACCESS_KEY_SECRET "$R2_ACCESS_KEY_SECRET" \
+            --arg R2_BUCKET_NAME "$R2_BUCKET_NAME" \
+            --arg R2_PUBLIC_URL "$R2_PUBLIC_URL" \
+            --arg GEOCODER_ENABLED "$GEOCODER_ENABLED" \
+            --arg NOMINATIM_BASE_URL "$NOMINATIM_BASE_URL" \
+            --arg NOMINATIM_USER_AGENT "$NOMINATIM_USER_AGENT" \
+            '{
+              ENV: $ENV,
+              CORS_ALLOWED_ORIGINS: $CORS_ALLOWED_ORIGINS,
+              DATABASE_URL: $DATABASE_URL,
+              JWT_SECRET: $JWT_SECRET,
+              JWT_ACCESS_TTL: $JWT_ACCESS_TTL,
+              JWT_REFRESH_TTL: $JWT_REFRESH_TTL,
+              SUPABASE_URL: $SUPABASE_URL,
+              R2_ACCOUNT_ID: $R2_ACCOUNT_ID,
+              R2_ACCESS_KEY_ID: $R2_ACCESS_KEY_ID,
+              R2_ACCESS_KEY_SECRET: $R2_ACCESS_KEY_SECRET,
+              R2_BUCKET_NAME: $R2_BUCKET_NAME,
+              R2_PUBLIC_URL: $R2_PUBLIC_URL,
+              GEOCODER_ENABLED: $GEOCODER_ENABLED,
+              NOMINATIM_BASE_URL: $NOMINATIM_BASE_URL,
+              NOMINATIM_USER_AGENT: $NOMINATIM_USER_AGENT
+            }' > "$runtime_env"
+
+          chmod 600 "$runtime_env"
+
+      - name: Deploy source to Cloud Run
+        run: |
+          gcloud run deploy "$CLOUD_RUN_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
             --source . \
-            --allow-unauthenticated \
-            --port 8080
+            --port 8080 \
+            --env-vars-file "$RUNNER_TEMP/runtime-env.json" \
+            --quiet
+
+      - name: Read service URL
+        id: service
+        run: |
+          url="$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --format='value(status.url)')"
+
+          if [[ -z "$url" ]]; then
+            echo "::error::Cloud Run did not return a service URL"
+            exit 1
+          fi
+
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Remove runtime environment file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/runtime-env.json"
+
+  health-check:
+    name: Health check
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Cloud Run health endpoint
+        env:
+          SERVICE_URL: ${{ needs.deploy.outputs.service_url }}
+        run: curl --fail --show-error --silent --retry 5 --retry-delay 5 --retry-all-errors "$SERVICE_URL/health"
