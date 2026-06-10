@@ -48,8 +48,18 @@ func NewR2(cfg R2Config) *R2 {
 	}
 }
 
-// Upload PUTs body under key and returns the object's public URL. The whole
-// body is buffered because SigV4 signs a hash of the payload.
+// PublicURL joins a public base URL and an object key. If key is already an
+// absolute URL (e.g. legacy rows that stored the full URL), it's returned as-is.
+func PublicURL(base, key string) string {
+	if key == "" || strings.HasPrefix(key, "http://") || strings.HasPrefix(key, "https://") {
+		return key
+	}
+	return strings.TrimRight(base, "/") + "/" + strings.TrimLeft(key, "/")
+}
+
+// Upload PUTs body under key and returns the stored object key (not the full
+// URL — callers build the public URL from R2_PUBLIC_URL at read time). The
+// whole body is buffered because SigV4 signs a hash of the payload.
 func (c *R2) Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error) {
 	payload, err := io.ReadAll(body)
 	if err != nil {
@@ -84,7 +94,7 @@ func (c *R2) Upload(ctx context.Context, key, contentType string, body io.Reader
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return "", fmt.Errorf("r2 upload failed: status %d: %s", resp.StatusCode, msg)
 	}
-	return c.cfg.PublicURL + "/" + key, nil
+	return key, nil
 }
 
 // authorization builds the SigV4 Authorization header value for a PutObject.

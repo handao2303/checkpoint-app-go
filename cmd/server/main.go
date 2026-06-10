@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 
+	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	appmw "github.com/quanluon/checkpoint-app/pkg/middleware"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
@@ -57,8 +58,10 @@ func run() error {
 		return fmt.Errorf("supabase verifier: %w", err)
 	}
 	r2 := storage.NewR2(cfg.r2)
-	identitySvc := identity.NewService(identity.NewRepository(pool), tokens, verifier, r2)
+	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL), tokens, verifier, r2)
 	identityHandler := identity.NewHandler(identitySvc)
+
+	checkpointHandler := checkpoint.NewHandler(checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL), r2))
 
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
@@ -74,6 +77,7 @@ func run() error {
 		respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	identityHandler.Register(r, appmw.Auth(tokens))
+	checkpointHandler.Register(r, appmw.Auth(tokens))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,

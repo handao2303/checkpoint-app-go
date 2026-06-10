@@ -128,11 +128,11 @@ func (s *Service) UpdateAvatar(ctx context.Context, id, contentType string, body
 		return nil, ErrUnsupportedFile
 	}
 	key := fmt.Sprintf("avatars/%s/%s%s", id, randHex(8), ext)
-	url, err := s.storage.Upload(ctx, key, contentType, body)
+	storedKey, err := s.storage.Upload(ctx, key, contentType, body)
 	if err != nil {
 		return nil, fmt.Errorf("upload avatar: %w", err)
 	}
-	return s.repo.UpdateAvatar(ctx, id, url)
+	return s.repo.UpdateAvatar(ctx, id, storedKey)
 }
 
 func (s *Service) issueTokens(ctx context.Context, u *User) (*TokenPair, error) {

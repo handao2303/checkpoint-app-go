@@ -1,0 +1,207 @@
+package checkpoint
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/quanluon/checkpoint-app/pkg/authctx"
+	"github.com/quanluon/checkpoint-app/pkg/respond"
+)
+
+const maxUploadBytes = 10 << 20 // 10 MiB per request
+
+// Handler exposes the checkpoint domain over HTTP.
+type Handler struct {
+	svc *Service
+}
+
+// NewHandler builds a checkpoint HTTP handler.
+func NewHandler(svc *Service) *Handler {
+	return &Handler{svc: svc}
+}
+
+// Register mounts checkpoint routes under /checkpoints (all require auth).
+func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
+	r.Route("/checkpoints", func(r chi.Router) {
+		r.Use(auth)
+		r.Post("/", h.Create)
+		r.Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (for the map)
+		r.Get("/nearby", h.ListNearby)
+		r.Get("/me", h.ListMine)
+		r.Get("/{id}", h.Get)
+		r.Post("/{id}/images", h.UploadImages)
+		r.Delete("/{id}", h.Delete)
+	})
+}
+
+type createRequest struct {
+	Name     string  `json:"name"`
+	Category string  `json:"category"`
+	Note     *string `json:"note"`
+	Rating   *int16  `json:"rating"`
+	Lat      float64 `json:"lat"`
+	Lng      float64 `json:"lng"`
+	Address  *string `json:"address"`
+}
+
+// Create handles a check-in.
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	var req createRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	result, err := h.svc.Create(r.Context(), p.UserID, Input(req))
+	if err != nil {
+		if errors.Is(err, ErrInvalidInput) {
+			respond.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		respond.Error(w, http.StatusInternalServerError, "could not create checkpoint")
+		return
+	}
+	respond.JSON(w, http.StatusCreated, result)
+}
+
+// ListMine returns the caller's checkpoints.
+func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := h.svc.ListMine(r.Context(), p.UserID, limit)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
+}
+
+// ListInBounds returns checkpoints inside a map viewport (?bbox=...).
+func (h *Handler) ListInBounds(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.Query().Get("bbox"), ",")
+	if len(parts) != 4 {
+		respond.Error(w, http.StatusBadRequest, "bbox must be minLng,minLat,maxLng,maxLat")
+		return
+	}
+	b, ok := parseFloats(parts)
+	if !ok {
+		respond.Error(w, http.StatusBadRequest, "bbox must be 4 numbers")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := h.svc.ListInBounds(r.Context(), b[0], b[1], b[2], b[3], limit)
+	if err != nil {
+		h.listError(w, err)
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
+}
+
+// ListNearby returns checkpoints near a point (?lat&lng&radius).
+func (h *Handler) ListNearby(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
+	lng, errLng := strconv.ParseFloat(q.Get("lng"), 64)
+	if errLat != nil || errLng != nil {
+		respond.Error(w, http.StatusBadRequest, "lat and lng are required numbers")
+		return
+	}
+	radius, _ := strconv.ParseFloat(q.Get("radius"), 64)
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	list, err := h.svc.ListNearby(r.Context(), lng, lat, radius, limit)
+	if err != nil {
+		h.listError(w, err)
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
+}
+
+// Get returns a checkpoint detail (with images + author) by id.
+func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
+	detail, err := h.svc.GetDetail(r.Context(), chi.URLParam(r, "id"))
+	if errors.Is(err, ErrNotFound) {
+		respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		return
+	}
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not load checkpoint")
+		return
+	}
+	respond.JSON(w, http.StatusOK, detail)
+}
+
+// UploadImages attaches multipart "images" files to a checkpoint the caller owns.
+func (h *Handler) UploadImages(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+	files := r.MultipartForm.File["images"]
+	if len(files) == 0 {
+		respond.Error(w, http.StatusBadRequest, "at least one 'images' file is required")
+		return
+	}
+
+	uploads := make([]ImageUpload, 0, len(files))
+	for _, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			respond.Error(w, http.StatusBadRequest, "could not read uploaded file")
+			return
+		}
+		defer func() { _ = f.Close() }()
+		uploads = append(uploads, ImageUpload{ContentType: fh.Header.Get("Content-Type"), Body: f})
+	}
+
+	images, err := h.svc.AddImages(r.Context(), chi.URLParam(r, "id"), p.UserID, uploads)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		case errors.Is(err, ErrUnsupportedFile):
+			respond.Error(w, http.StatusUnsupportedMediaType, "ảnh phải là jpeg, png, webp hoặc gif")
+		case errors.Is(err, ErrInvalidInput):
+			respond.Error(w, http.StatusBadRequest, err.Error())
+		default:
+			respond.Error(w, http.StatusInternalServerError, "could not upload images")
+		}
+		return
+	}
+	respond.JSON(w, http.StatusCreated, map[string]any{"images": images})
+}
+
+func (h *Handler) listError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrInvalidInput) {
+		respond.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
+}
+
+func parseFloats(parts []string) ([]float64, bool) {
+	out := make([]float64, len(parts))
+	for i, p := range parts {
+		v, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return nil, false
+		}
+		out[i] = v
+	}
+	return out, true
+}
+
+// Delete soft-deletes the caller's checkpoint.
+func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	if err := h.svc.Delete(r.Context(), chi.URLParam(r, "id"), p.UserID); err != nil {
+		respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		return
+	}
+	respond.JSON(w, http.StatusNoContent, nil)
+}

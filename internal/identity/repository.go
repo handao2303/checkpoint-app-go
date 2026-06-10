@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/quanluon/checkpoint-app/pkg/storage"
 )
 
 // Sentinel errors returned by the repository.
@@ -19,16 +21,27 @@ var (
 
 // Repository is the Postgres-backed data layer for the identity domain.
 type Repository struct {
-	db *pgxpool.Pool
+	db        *pgxpool.Pool
+	mediaBase string // R2 public base URL, prepended to avatar keys on read
 }
 
-// NewRepository builds a Repository over a pgx pool.
-func NewRepository(db *pgxpool.Pool) *Repository {
-	return &Repository{db: db}
+// NewRepository builds a Repository over a pgx pool. mediaBase is the public
+// base URL used to turn stored avatar keys into full URLs.
+func NewRepository(db *pgxpool.Pool, mediaBase string) *Repository {
+	return &Repository{db: db, mediaBase: mediaBase}
 }
 
-const userColumns = `id, supabase_id, email, username, display_name, avatar_url, bio,
+const userColumns = `id, supabase_id, email, username, display_name, avatar_key, bio,
 	role, is_anonymous, total_xp, level, checkpoint_count, journey_count, created_at, updated_at`
+
+// withAvatarURL turns the stored avatar key into a full public URL.
+func (r *Repository) withAvatarURL(u *User) *User {
+	if u != nil && u.AvatarURL != nil {
+		url := storage.PublicURL(r.mediaBase, *u.AvatarURL)
+		u.AvatarURL = &url
+	}
+	return u
+}
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
@@ -44,24 +57,24 @@ func scanUser(row pgx.Row) (*User, error) {
 func (r *Repository) GetByID(ctx context.Context, id string) (*User, error) {
 	row := r.db.QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE id = $1 AND deleted_at IS NULL`, id)
-	return getUser(row, "get user by id")
+	return r.getUser(row, "get user by id")
 }
 
 // GetBySupabaseID returns the active user linked to a Supabase account.
 func (r *Repository) GetBySupabaseID(ctx context.Context, supabaseID string) (*User, error) {
 	row := r.db.QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE supabase_id = $1 AND deleted_at IS NULL`, supabaseID)
-	return getUser(row, "get user by supabase id")
+	return r.getUser(row, "get user by supabase id")
 }
 
 // GetByUsername returns the active user with the given username.
 func (r *Repository) GetByUsername(ctx context.Context, username string) (*User, error) {
 	row := r.db.QueryRow(ctx,
 		`SELECT `+userColumns+` FROM users WHERE username = $1 AND deleted_at IS NULL`, username)
-	return getUser(row, "get user by username")
+	return r.getUser(row, "get user by username")
 }
 
-func getUser(row pgx.Row, op string) (*User, error) {
+func (r *Repository) getUser(row pgx.Row, op string) (*User, error) {
 	u, err := scanUser(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
@@ -69,7 +82,7 @@ func getUser(row pgx.Row, op string) (*User, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	return u, nil
+	return r.withAvatarURL(u), nil
 }
 
 // CreateUser inserts a new user and returns the stored row.
@@ -97,17 +110,17 @@ func (r *Repository) UpdateProfile(ctx context.Context, id string, displayName, 
 		 WHERE id = $1 AND deleted_at IS NULL
 		 RETURNING `+userColumns,
 		id, displayName, bio)
-	return getUser(row, "update profile")
+	return r.getUser(row, "update profile")
 }
 
-// UpdateAvatar sets the avatar URL and returns the updated user.
-func (r *Repository) UpdateAvatar(ctx context.Context, id, url string) (*User, error) {
+// UpdateAvatar stores the avatar's object key and returns the updated user.
+func (r *Repository) UpdateAvatar(ctx context.Context, id, key string) (*User, error) {
 	row := r.db.QueryRow(ctx,
-		`UPDATE users SET avatar_url = $2, updated_at = NOW()
+		`UPDATE users SET avatar_key = $2, updated_at = NOW()
 		 WHERE id = $1 AND deleted_at IS NULL
 		 RETURNING `+userColumns,
-		id, url)
-	return getUser(row, "update avatar")
+		id, key)
+	return r.getUser(row, "update avatar")
 }
 
 // UpdateAuthIdentity sets the email and anonymity flag — used when an anonymous
@@ -118,7 +131,7 @@ func (r *Repository) UpdateAuthIdentity(ctx context.Context, id string, email *s
 		 WHERE id = $1 AND deleted_at IS NULL
 		 RETURNING `+userColumns,
 		id, email, isAnonymous)
-	return getUser(row, "update auth identity")
+	return r.getUser(row, "update auth identity")
 }
 
 // CreateRefreshToken stores the hash of a freshly issued refresh token.
