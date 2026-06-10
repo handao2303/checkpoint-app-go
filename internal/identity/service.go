@@ -26,6 +26,7 @@ type repository interface {
 	CreateUser(ctx context.Context, p CreateUserParams) (*User, error)
 	UpdateProfile(ctx context.Context, id string, displayName, bio *string) (*User, error)
 	UpdateAvatar(ctx context.Context, id, url string) (*User, error)
+	UpdateAuthIdentity(ctx context.Context, id string, email *string, isAnonymous bool) (*User, error)
 	CreateRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
 	GetRefreshToken(ctx context.Context, hash string) (*RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, hash string) error
@@ -63,8 +64,11 @@ func (s *Service) Exchange(ctx context.Context, supabaseToken string) (*TokenPai
 	}
 
 	user, err := s.repo.GetBySupabaseID(ctx, claims.Subject)
-	if errors.Is(err, ErrUserNotFound) {
+	switch {
+	case errors.Is(err, ErrUserNotFound):
 		user, err = s.provisionUser(ctx, claims)
+	case err == nil:
+		user, err = s.reconcile(ctx, user, claims)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -150,10 +154,7 @@ func (s *Service) issueTokens(ctx context.Context, u *User) (*TokenPair, error) 
 // rare username collision and tolerating a concurrent provision of the same
 // Supabase id.
 func (s *Service) provisionUser(ctx context.Context, claims *supabase.Claims) (*User, error) {
-	var email *string
-	if claims.Email != "" {
-		email = &claims.Email
-	}
+	email := claimsEmail(claims)
 	for attempt := 0; attempt < 5; attempt++ {
 		u, err := s.repo.CreateUser(ctx, CreateUserParams{
 			SupabaseID:  claims.Subject,
@@ -175,6 +176,39 @@ func (s *Service) provisionUser(ctx context.Context, claims *supabase.Claims) (*
 		// Otherwise it was a username clash: loop and regenerate.
 	}
 	return nil, errors.New("could not provision user after retries")
+}
+
+// reconcile syncs an existing user's email/anonymity from fresh Supabase claims.
+// This is what makes the anonymous → real account upgrade stick: Supabase keeps
+// the same `sub`, so the local user (and all their data) is reused — we just
+// flip is_anonymous and store the new email.
+func (s *Service) reconcile(ctx context.Context, user *User, claims *supabase.Claims) (*User, error) {
+	email := claimsEmail(claims)
+	if user.IsAnonymous == claims.IsAnonymous && samePtr(user.Email, email) {
+		return user, nil // nothing changed
+	}
+	updated, err := s.repo.UpdateAuthIdentity(ctx, user.ID, email, claims.IsAnonymous)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return user, nil // email already linked elsewhere — keep login working
+		}
+		return nil, err
+	}
+	return updated, nil
+}
+
+func claimsEmail(c *supabase.Claims) *string {
+	if c.Email == "" {
+		return nil
+	}
+	return &c.Email
+}
+
+func samePtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // generateUsername derives a unique-ish handle from an email local part.

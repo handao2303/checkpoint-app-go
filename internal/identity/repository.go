@@ -110,6 +110,17 @@ func (r *Repository) UpdateAvatar(ctx context.Context, id, url string) (*User, e
 	return getUser(row, "update avatar")
 }
 
+// UpdateAuthIdentity sets the email and anonymity flag — used when an anonymous
+// account is upgraded to a permanent one (same Supabase id).
+func (r *Repository) UpdateAuthIdentity(ctx context.Context, id string, email *string, isAnonymous bool) (*User, error) {
+	row := r.db.QueryRow(ctx,
+		`UPDATE users SET email = $2, is_anonymous = $3, updated_at = NOW()
+		 WHERE id = $1 AND deleted_at IS NULL
+		 RETURNING `+userColumns,
+		id, email, isAnonymous)
+	return getUser(row, "update auth identity")
+}
+
 // CreateRefreshToken stores the hash of a freshly issued refresh token.
 func (r *Repository) CreateRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error {
 	_, err := r.db.Exec(ctx,
