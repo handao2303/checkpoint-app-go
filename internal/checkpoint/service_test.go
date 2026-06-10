@@ -54,7 +54,7 @@ func (f *fakeGeocoder) Reverse(context.Context, float64, float64) (string, error
 
 func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	repo := &fakeRepo{}
-	svc := NewService(repo, nil, nil)
+	svc := NewService(repo, nil, nil, nil)
 
 	res, err := svc.Create(context.Background(), "user1", Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestServiceCreate_ResolvesAddress(t *testing.T) {
 	repo := &fakeRepo{}
 	geocoder := &fakeGeocoder{address: "123 Đường Nguyễn Huệ, Quận 1"}
 
-	if _, err := NewService(repo, nil, geocoder).Create(
+	if _, err := NewService(repo, nil, geocoder, nil).Create(
 		context.Background(),
 		"user1",
 		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6},
@@ -95,7 +95,7 @@ func TestServiceCreate_KeepsExplicitAddress(t *testing.T) {
 	repo := &fakeRepo{}
 	geocoder := &fakeGeocoder{address: "resolved address"}
 
-	if _, err := NewService(repo, nil, geocoder).Create(
+	if _, err := NewService(repo, nil, geocoder, nil).Create(
 		context.Background(),
 		"user1",
 		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: stringPtr("  custom address  ")},
@@ -115,7 +115,7 @@ func TestServiceCreate_GeocoderFailureIsNonFatal(t *testing.T) {
 	repo := &fakeRepo{}
 	geocoder := &fakeGeocoder{err: errors.New("provider unavailable")}
 
-	if _, err := NewService(repo, nil, geocoder).Create(
+	if _, err := NewService(repo, nil, geocoder, nil).Create(
 		context.Background(),
 		"user1",
 		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6},
@@ -142,7 +142,7 @@ func TestServiceCreate_Validation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{}
 			geocoder := &fakeGeocoder{address: "resolved address"}
-			_, err := NewService(repo, nil, geocoder).Create(context.Background(), "u", tt.in)
+			_, err := NewService(repo, nil, geocoder, nil).Create(context.Background(), "u", tt.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("expected ErrInvalidInput, got %v", err)
 			}
@@ -159,12 +159,29 @@ func TestServiceCreate_Validation(t *testing.T) {
 func TestServiceCreate_ForwardsPlaceID(t *testing.T) {
 	repo := &fakeRepo{}
 	pid := "place-123"
-	_, err := NewService(repo, nil, nil).Create(
+	_, err := NewService(repo, nil, nil, nil).Create(
 		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, PlaceID: &pid})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if repo.lastCreate.PlaceID == nil || *repo.lastCreate.PlaceID != pid {
 		t.Errorf("PlaceID not forwarded: %v", repo.lastCreate.PlaceID)
+	}
+}
+
+type fakeJourneys struct{ id *string }
+
+func (f *fakeJourneys) ActiveJourneyID(context.Context, string) (*string, error) { return f.id, nil }
+
+func TestServiceCreate_UsesActiveJourney(t *testing.T) {
+	repo := &fakeRepo{}
+	jid := "journey-1"
+	_, err := NewService(repo, nil, nil, &fakeJourneys{id: &jid}).Create(
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.lastCreate.JourneyID == nil || *repo.lastCreate.JourneyID != jid {
+		t.Errorf("JourneyID = %v, want %q", repo.lastCreate.JourneyID, jid)
 	}
 }

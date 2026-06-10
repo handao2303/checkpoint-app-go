@@ -36,13 +36,13 @@ func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver) *Re
 }
 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
-	place_id, xp_awarded, created_at, updated_at`
+	place_id, journey_id, xp_awarded, created_at, updated_at`
 
 func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 	var c Checkpoint
 	err := row.Scan(
 		&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-		&c.Address, &c.PlaceID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
+		&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
 	)
 	return &c, err
 }
@@ -72,10 +72,10 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}
 
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, place_id, xp_awarded)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, place_id, journey_id, xp_awarded)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		 RETURNING `+cpColumns,
-		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, placeID, p.XPReward))
+		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, placeID, p.JourneyID, p.XPReward))
 	if err != nil {
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}
@@ -121,16 +121,38 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Checkpoint, error
 	return c, nil
 }
 
-// ListByUser returns a user's checkpoints, newest first.
+// ListByUser returns a user's checkpoints (newest first), each with its first
+// photo URL (for the profile gallery).
 func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT `+cpColumns+` FROM checkpoints
-		 WHERE user_id = $1 AND deleted_at IS NULL
-		 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+		`SELECT `+cpColumns+`,
+		        (SELECT object_key FROM checkpoint_images ci
+		         WHERE ci.checkpoint_id = c.id ORDER BY ci.sort_order, ci.created_at LIMIT 1)
+		 FROM checkpoints c
+		 WHERE c.user_id = $1 AND c.deleted_at IS NULL
+		 ORDER BY c.created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoints: %w", err)
 	}
-	return collectCheckpoints(rows)
+	defer rows.Close()
+
+	var out []*Checkpoint
+	for rows.Next() {
+		var c Checkpoint
+		var imageKey *string
+		if err := rows.Scan(
+			&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
+			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt, &imageKey,
+		); err != nil {
+			return nil, fmt.Errorf("scan checkpoint: %w", err)
+		}
+		if imageKey != nil {
+			u := storage.PublicURL(r.mediaBase, *imageKey)
+			c.ImageURL = &u
+		}
+		out = append(out, &c)
+	}
+	return out, rows.Err()
 }
 
 // ListInBounds returns checkpoints whose location falls inside the given

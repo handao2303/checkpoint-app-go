@@ -14,6 +14,8 @@ type Checkpoint struct {
 	Lng       float64   `json:"lng"`
 	Address   *string   `json:"address,omitempty"`
 	PlaceID   *string   `json:"place_id,omitempty"`
+	JourneyID *string   `json:"journey_id,omitempty"`
+	ImageURL  *string   `json:"image_url,omitempty"` // first photo (populated in list)
 	XPAwarded int       `json:"xp_awarded"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -21,16 +23,17 @@ type Checkpoint struct {
 
 // CreateParams are the validated inputs for creating a checkpoint.
 type CreateParams struct {
-	UserID   string
-	Name     string
-	Category string
-	Note     *string
-	Rating   *int16
-	Lat      float64
-	Lng      float64
-	Address  *string
-	PlaceID  *string // optional: check-in to a specific place (else resolved)
-	XPReward int
+	UserID    string
+	Name      string
+	Category  string
+	Note      *string
+	Rating    *int16
+	Lat       float64
+	Lng       float64
+	Address   *string
+	PlaceID   *string // optional: check-in to a specific place (else resolved)
+	JourneyID *string // optional: attach to a journey (else active journey)
+	XPReward  int
 }
 
 // CreateResult is the outcome of a check-in: the new checkpoint plus the user's

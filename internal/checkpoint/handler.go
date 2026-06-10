@@ -40,14 +40,15 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
 }
 
 type createRequest struct {
-	Name     string  `json:"name"`
-	Category string  `json:"category"`
-	Note     *string `json:"note"`
-	Rating   *int16  `json:"rating"`
-	Lat      float64 `json:"lat"`
-	Lng      float64 `json:"lng"`
-	Address  *string `json:"address"`
-	PlaceID  *string `json:"place_id"`
+	Name      string  `json:"name"`
+	Category  string  `json:"category"`
+	Note      *string `json:"note"`
+	Rating    *int16  `json:"rating"`
+	Lat       float64 `json:"lat"`
+	Lng       float64 `json:"lng"`
+	Address   *string `json:"address"`
+	PlaceID   *string `json:"place_id"`
+	JourneyID *string `json:"journey_id"`
 }
 
 // Create handles a check-in.

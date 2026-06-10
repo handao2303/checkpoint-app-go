@@ -49,28 +49,36 @@ type reverseGeocoder interface {
 	Reverse(ctx context.Context, lat, lng float64) (string, error)
 }
 
+// activeJourneyReader returns the user's active journey id (or nil), so a
+// check-in made while travelling is attached to it.
+type activeJourneyReader interface {
+	ActiveJourneyID(ctx context.Context, userID string) (*string, error)
+}
+
 // Service holds the checkpoint business logic.
 type Service struct {
 	repo     repository
 	storage  fileStorage
 	geocoder reverseGeocoder
+	journeys activeJourneyReader
 }
 
 // NewService builds the checkpoint service.
-func NewService(repo repository, storage fileStorage, geocoder reverseGeocoder) *Service {
-	return &Service{repo: repo, storage: storage, geocoder: geocoder}
+func NewService(repo repository, storage fileStorage, geocoder reverseGeocoder, journeys activeJourneyReader) *Service {
+	return &Service{repo: repo, storage: storage, geocoder: geocoder, journeys: journeys}
 }
 
 // Input is the user-supplied data for a check-in (before validation).
 type Input struct {
-	Name     string
-	Category string
-	Note     *string
-	Rating   *int16
-	Lat      float64
-	Lng      float64
-	Address  *string
-	PlaceID  *string
+	Name      string
+	Category  string
+	Note      *string
+	Rating    *int16
+	Lat       float64
+	Lng       float64
+	Address   *string
+	PlaceID   *string
+	JourneyID *string
 }
 
 // Create validates input and creates a checkpoint, awarding XP.
@@ -89,6 +97,15 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 	if category == "" {
 		category = "other"
 	}
+
+	// Attach to a journey: explicit one, else the user's active journey (if any).
+	journeyID := in.JourneyID
+	if journeyID == nil && s.journeys != nil {
+		if active, err := s.journeys.ActiveJourneyID(ctx, userID); err == nil {
+			journeyID = active
+		}
+	}
+
 	address := in.Address
 	if address != nil {
 		trimmed := strings.TrimSpace(*address)
@@ -107,16 +124,17 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 	}
 
 	return s.repo.Create(ctx, CreateParams{
-		UserID:   userID,
-		Name:     name,
-		Category: category,
-		Note:     in.Note,
-		Rating:   in.Rating,
-		Lat:      in.Lat,
-		Lng:      in.Lng,
-		Address:  address,
-		PlaceID:  in.PlaceID,
-		XPReward: checkinXP,
+		UserID:    userID,
+		Name:      name,
+		Category:  category,
+		Note:      in.Note,
+		Rating:    in.Rating,
+		Lat:       in.Lat,
+		Lng:       in.Lng,
+		Address:   address,
+		PlaceID:   in.PlaceID,
+		JourneyID: journeyID,
+		XPReward:  checkinXP,
 	})
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/geocode"
 	"github.com/quanluon/checkpoint-app/internal/identity"
+	"github.com/quanluon/checkpoint-app/internal/journey"
 	"github.com/quanluon/checkpoint-app/internal/place"
 	appmw "github.com/quanluon/checkpoint-app/pkg/middleware"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
@@ -67,16 +68,34 @@ func run() error {
 	geocoder := geocode.NewClient(cfg.geocoder)
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
 	placeHandler := place.NewHandler(place.NewService(placeRepo))
+	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
+	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
 	checkpointHandler := checkpoint.NewHandler(
-		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo), r2, geocoder))
+		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo), r2, geocoder, journeyRepo))
 
-	r := chi.NewRouter()
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins: cfg.corsOrigins,
+	corsOpts := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Authorization", "Content-Type"},
 		MaxAge:         300,
-	}))
+	}
+	if cfg.env == "production" {
+		corsOpts.AllowedOrigins = cfg.corsOrigins
+	} else {
+		// Dev: allow any localhost / 127.0.0.1 origin (any port) plus configured ones,
+		// so it doesn't matter which Vite picks or whether you use localhost vs 127.0.0.1.
+		allowed := make(map[string]bool, len(cfg.corsOrigins))
+		for _, o := range cfg.corsOrigins {
+			allowed[o] = true
+		}
+		corsOpts.AllowOriginFunc = func(_ *http.Request, origin string) bool {
+			return allowed[origin] ||
+				strings.HasPrefix(origin, "http://localhost:") ||
+				strings.HasPrefix(origin, "http://127.0.0.1:")
+		}
+	}
+
+	r := chi.NewRouter()
+	r.Use(cors.Handler(corsOpts))
 	r.Use(chimw.RequestID, chimw.Logger, chimw.Recoverer)
 	r.Use(chimw.Timeout(30 * time.Second))
 
@@ -86,6 +105,7 @@ func run() error {
 	identityHandler.Register(r, appmw.Auth(tokens))
 	checkpointHandler.Register(r, appmw.Auth(tokens))
 	placeHandler.Register(r, appmw.Auth(tokens))
+	journeyHandler.Register(r, appmw.Auth(tokens))
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,

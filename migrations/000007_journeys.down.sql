@@ -1,0 +1,2 @@
+ALTER TABLE checkpoints DROP COLUMN IF EXISTS journey_id;
+DROP TABLE IF EXISTS journeys;
