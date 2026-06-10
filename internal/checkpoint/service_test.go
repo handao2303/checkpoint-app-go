@@ -38,11 +38,23 @@ func (f *fakeRepo) AddImages(context.Context, string, []string, int) ([]Image, e
 func (f *fakeRepo) CountImages(context.Context, string) (int, error) { return 0, nil }
 func (f *fakeRepo) Delete(context.Context, string, string) error     { return nil }
 
-func ratingPtr(v int16) *int16 { return &v }
+func ratingPtr(v int16) *int16   { return &v }
+func stringPtr(v string) *string { return &v }
+
+type fakeGeocoder struct {
+	calls   int
+	address string
+	err     error
+}
+
+func (f *fakeGeocoder) Reverse(context.Context, float64, float64) (string, error) {
+	f.calls++
+	return f.address, f.err
+}
 
 func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	repo := &fakeRepo{}
-	svc := NewService(repo, nil)
+	svc := NewService(repo, nil, nil)
 
 	res, err := svc.Create(context.Background(), "user1", Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6})
 	if err != nil {
@@ -59,6 +71,63 @@ func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	}
 }
 
+func TestServiceCreate_ResolvesAddress(t *testing.T) {
+	repo := &fakeRepo{}
+	geocoder := &fakeGeocoder{address: "123 Đường Nguyễn Huệ, Quận 1"}
+
+	if _, err := NewService(repo, nil, geocoder).Create(
+		context.Background(),
+		"user1",
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if geocoder.calls != 1 {
+		t.Fatalf("geocoder calls = %d, want 1", geocoder.calls)
+	}
+	if repo.lastCreate.Address == nil || *repo.lastCreate.Address != geocoder.address {
+		t.Fatalf("Address = %v, want %q", repo.lastCreate.Address, geocoder.address)
+	}
+}
+
+func TestServiceCreate_KeepsExplicitAddress(t *testing.T) {
+	repo := &fakeRepo{}
+	geocoder := &fakeGeocoder{address: "resolved address"}
+
+	if _, err := NewService(repo, nil, geocoder).Create(
+		context.Background(),
+		"user1",
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: stringPtr("  custom address  ")},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if geocoder.calls != 0 {
+		t.Fatalf("geocoder calls = %d, want 0", geocoder.calls)
+	}
+	if repo.lastCreate.Address == nil || *repo.lastCreate.Address != "custom address" {
+		t.Fatalf("Address = %v, want %q", repo.lastCreate.Address, "custom address")
+	}
+}
+
+func TestServiceCreate_GeocoderFailureIsNonFatal(t *testing.T) {
+	repo := &fakeRepo{}
+	geocoder := &fakeGeocoder{err: errors.New("provider unavailable")}
+
+	if _, err := NewService(repo, nil, geocoder).Create(
+		context.Background(),
+		"user1",
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if repo.lastCreate.Address != nil {
+		t.Fatalf("Address = %q, want nil", *repo.lastCreate.Address)
+	}
+}
+
 func TestServiceCreate_Validation(t *testing.T) {
 	tests := []struct {
 		name string
@@ -72,9 +141,13 @@ func TestServiceCreate_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{}
-			_, err := NewService(repo, nil).Create(context.Background(), "u", tt.in)
+			geocoder := &fakeGeocoder{address: "resolved address"}
+			_, err := NewService(repo, nil, geocoder).Create(context.Background(), "u", tt.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("expected ErrInvalidInput, got %v", err)
+			}
+			if geocoder.calls != 0 {
+				t.Errorf("geocoder calls = %d, want 0", geocoder.calls)
 			}
 			if repo.lastCreate != nil {
 				t.Error("repo.Create should not be called on invalid input")

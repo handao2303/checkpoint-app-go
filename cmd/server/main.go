@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
+	"github.com/quanluon/checkpoint-app/internal/geocode"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	appmw "github.com/quanluon/checkpoint-app/pkg/middleware"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
@@ -61,7 +63,8 @@ func run() error {
 	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL), tokens, verifier, r2)
 	identityHandler := identity.NewHandler(identitySvc)
 
-	checkpointHandler := checkpoint.NewHandler(checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL), r2))
+	geocoder := geocode.NewClient(cfg.geocoder)
+	checkpointHandler := checkpoint.NewHandler(checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL), r2, geocoder))
 
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
@@ -119,6 +122,7 @@ type config struct {
 	accessTTL   time.Duration
 	refreshTTL  time.Duration
 	r2          storage.R2Config
+	geocoder    geocode.Config
 }
 
 func loadConfig() (config, error) {
@@ -135,6 +139,11 @@ func loadConfig() (config, error) {
 			SecretKey: os.Getenv("R2_ACCESS_KEY_SECRET"),
 			Bucket:    os.Getenv("R2_BUCKET_NAME"),
 			PublicURL: os.Getenv("R2_PUBLIC_URL"),
+		},
+		geocoder: geocode.Config{
+			Enabled:   boolEnv("GEOCODER_ENABLED", true),
+			BaseURL:   getEnv("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"),
+			UserAgent: getEnv("NOMINATIM_USER_AGENT", "checkpoint-app/0.1"),
 		},
 	}
 
@@ -174,6 +183,18 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func boolEnv(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 // durationEnv parses a duration env var, ignoring any trailing inline comment

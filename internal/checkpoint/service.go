@@ -45,15 +45,20 @@ type fileStorage interface {
 	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 }
 
+type reverseGeocoder interface {
+	Reverse(ctx context.Context, lat, lng float64) (string, error)
+}
+
 // Service holds the checkpoint business logic.
 type Service struct {
-	repo    repository
-	storage fileStorage
+	repo     repository
+	storage  fileStorage
+	geocoder reverseGeocoder
 }
 
 // NewService builds the checkpoint service.
-func NewService(repo repository, storage fileStorage) *Service {
-	return &Service{repo: repo, storage: storage}
+func NewService(repo repository, storage fileStorage, geocoder reverseGeocoder) *Service {
+	return &Service{repo: repo, storage: storage, geocoder: geocoder}
 }
 
 // Input is the user-supplied data for a check-in (before validation).
@@ -83,6 +88,22 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 	if category == "" {
 		category = "other"
 	}
+	address := in.Address
+	if address != nil {
+		trimmed := strings.TrimSpace(*address)
+		if trimmed == "" {
+			address = nil
+		} else {
+			address = &trimmed
+		}
+	}
+	if address == nil && s.geocoder != nil {
+		if resolved, err := s.geocoder.Reverse(ctx, in.Lat, in.Lng); err == nil {
+			if resolved = strings.TrimSpace(resolved); resolved != "" {
+				address = &resolved
+			}
+		}
+	}
 
 	return s.repo.Create(ctx, CreateParams{
 		UserID:   userID,
@@ -92,7 +113,7 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		Rating:   in.Rating,
 		Lat:      in.Lat,
 		Lng:      in.Lng,
-		Address:  in.Address,
+		Address:  address,
 		XPReward: checkinXP,
 	})
 }

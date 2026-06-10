@@ -21,6 +21,21 @@ curl localhost:8080/health
 
 `make help` để xem tất cả target. Deploy lên Cloud Run: **[DEPLOY.md](DEPLOY.md)**.
 
+## Reverse geocoding
+
+Khi tạo checkpoint mà request không có `address`, backend tự lấy địa chỉ đầy đủ
+từ lat/lng qua OpenStreetMap Nominatim. Client có cache trong memory, timeout,
+và giới hạn tối đa 1 request/giây để tuân thủ public API usage policy.
+
+```env
+GEOCODER_ENABLED=true
+NOMINATIM_BASE_URL=https://nominatim.openstreetmap.org
+NOMINATIM_USER_AGENT=checkpoint-app/0.1
+```
+
+Map frontend giữ attribution OpenStreetMap/OpenFreeMap. Nếu traffic tăng, đổi
+`NOMINATIM_BASE_URL` sang endpoint tương thích tự host hoặc có trả phí.
+
 ## API — Phase 1
 
 ```
@@ -38,6 +53,7 @@ GET    /users/{username}  [auth]
 
 ```
 cmd/server/main.go        config + wiring + graceful shutdown
+internal/geocode/         cached + rate-limited Nominatim reverse geocoder
 internal/identity/        auth + profile (handler/service/repository/token)
 pkg/                      authctx · middleware · respond · storage(R2) · supabase(JWKS)
 migrations/               users, refresh_tokens
