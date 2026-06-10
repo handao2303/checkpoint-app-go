@@ -42,7 +42,7 @@ jobs:
   migrate:
     name: Migrate database
     needs: test
-    if: github.event_name == 'workflow_dispatch' && inputs.run_migrations
+    if: github.event_name == 'push' || inputs.run_migrations
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}

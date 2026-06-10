@@ -68,16 +68,17 @@ Cloud Run as plain environment variables. It does not use Secret Manager.
 `.github/workflows/deploy.yml` runs on pushes to `main` and manual dispatches:
 
 1. Run `go vet` and tests with race detection.
-2. Optionally apply pending database migrations when selected in a manual run.
+2. Apply pending database migrations on pushes to `main`, or when selected in a
+   manual run.
 3. Authenticate to GCP through WIF and deploy source to Cloud Run.
 4. Call the deployed service's `/health` endpoint.
 
 Production runs are serialized. A newer run waits for the current deployment
 instead of cancelling it.
 
-Pushes to `main` skip migrations and deploy automatically after tests pass.
-To run migrations, start the workflow manually and select
-`Run database migrations before deploying`.
+Pushes and merged pull requests targeting `main` automatically run migrations
+before deploying. For manual runs, select `Run database migrations before
+deploying` only when migrations should run.
 
 ### 5.1 Enable GCP APIs
 
@@ -260,9 +261,8 @@ Do not add `GCP_SA_KEY`; WIF replaces long-lived JSON service account keys.
 For ordinary code-only releases, leave the migration checkbox disabled. The
 workflow skips the migration job and proceeds to deploy after tests pass.
 
-For automatic deployments caused by pushes to `main`, the migration job is
-always skipped. If a release needs a migration, run the workflow manually with
-the checkbox enabled instead of relying only on the push-triggered run.
+Automatic deployments caused by direct pushes or merged pull requests into
+`main` always run migrations before deploying.
 
 The workflow intentionally does not pass `--allow-unauthenticated`, so it keeps
 the service's current public/private access policy unchanged.
