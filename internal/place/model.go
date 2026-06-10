@@ -75,6 +75,7 @@ type FeedItem struct {
 	CreatedAt time.Time `json:"created_at"`
 	Author    Author    `json:"author"`
 	ImageURL  *string   `json:"image_url,omitempty"`
+	DistanceM float64   `json:"distance_m"`
 }
 
 // Feed is a page of feed items with an optional keyset cursor for the next page.

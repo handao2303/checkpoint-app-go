@@ -17,14 +17,12 @@ import (
 var ErrInvalidInput = errors.New("invalid input")
 
 const (
-	defaultLimit       = 20
-	maxLimit           = 50
-	defaultRadiusM     = 5000
-	maxRadiusM         = 50000
-	defaultFeedRadiusM = 50000
-	maxFeedRadiusM     = 200000
-	popularRadiusM     = 50000
-	popularTTL         = 60 * time.Second
+	defaultLimit   = 20
+	maxLimit       = 50
+	defaultRadiusM = 5000
+	maxRadiusM     = 50000
+	popularRadiusM = 50000
+	popularTTL     = 60 * time.Second
 )
 
 // readRepository is the data layer the service depends on (consumer-side
@@ -34,7 +32,7 @@ type readRepository interface {
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Place, error)
 	GetDetail(ctx context.Context, id string) (*Detail, error)
 	Popular(ctx context.Context, near *Point, radiusM float64, limit int) ([]*Place, error)
-	Feed(ctx context.Context, lng, lat, radiusM float64, cursor *time.Time, limit int) (*Feed, error)
+	Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error)
 }
 
 // Service holds the place (discovery) read logic.
@@ -87,18 +85,12 @@ func (s *Service) GetDetail(ctx context.Context, id string) (*Detail, error) {
 	return s.repo.GetDetail(ctx, id)
 }
 
-// Feed returns community check-ins near a point (keyset-paginated).
-func (s *Service) Feed(ctx context.Context, lat, lng float64, cursor *time.Time, radiusM float64, limit int) (*Feed, error) {
+// Feed returns community check-ins ordered nearest → farthest (keyset cursor).
+func (s *Service) Feed(ctx context.Context, lat, lng float64, cursor string, limit int) (*Feed, error) {
 	if lat < -90 || lat > 90 || lng < -180 || lng > 180 {
 		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
 	}
-	if radiusM <= 0 {
-		radiusM = defaultFeedRadiusM
-	}
-	if radiusM > maxFeedRadiusM {
-		radiusM = maxFeedRadiusM
-	}
-	return s.repo.Feed(ctx, lng, lat, radiusM, cursor, clampLimit(limit))
+	return s.repo.Feed(ctx, lng, lat, cursor, clampLimit(limit))
 }
 
 // Popular returns top places by check-in count, cached (TTL) and single-flighted

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -51,7 +50,7 @@ func (h *Handler) Popular(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"places": places})
 }
 
-// Feed returns community check-ins near a point (?lat&lng&radius&cursor&limit).
+// Feed returns community check-ins nearest → farthest (?lat&lng&cursor&limit).
 func (h *Handler) Feed(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
@@ -60,15 +59,8 @@ func (h *Handler) Feed(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusBadRequest, "lat and lng are required numbers")
 		return
 	}
-	radius, _ := strconv.ParseFloat(q.Get("radius"), 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	var cursor *time.Time
-	if raw := q.Get("cursor"); raw != "" {
-		if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-			cursor = &t
-		}
-	}
-	feed, err := h.svc.Feed(r.Context(), lat, lng, cursor, radius, limit)
+	feed, err := h.svc.Feed(r.Context(), lat, lng, q.Get("cursor"), limit)
 	if err != nil {
 		h.listError(w, err)
 		return
