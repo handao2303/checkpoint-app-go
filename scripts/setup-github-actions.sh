@@ -5,7 +5,7 @@ set -euo pipefail
 REPO="${GITHUB_REPOSITORY:-uitbestteam/checkpoint-app-go}"
 ENV_FILE="${ENV_FILE:-.env}"
 PROJECT_ID="${PROJECT_ID:-${GCP_PROJECT_ID:-}}"
-REGION="${REGION:-asia-southeast1}"
+REGION="${REGION:-us-central1}"
 SERVICE="${SERVICE:-checkpoint-api}"
 DEPLOY_SA_NAME="${DEPLOY_SA_NAME:-github-backend-deploy}"
 POOL_ID="${POOL_ID:-github-actions}"

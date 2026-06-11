@@ -87,7 +87,7 @@ Set the project once in your terminal:
 ```bash
 export PROJECT_ID="<GCP_PROJECT_ID>"
 export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
-export REGION="asia-southeast1"
+export REGION="us-central1"
 export SERVICE="checkpoint-api"
 export REPOSITORY="uitbestteam/checkpoint-app-go"
 export DEPLOY_SA_NAME="github-backend-deploy"
@@ -187,7 +187,7 @@ chmod +x scripts/setup-github-actions.sh
 The script uses the current `gcloud` project and these defaults:
 
 - Repository: `uitbestteam/checkpoint-app-go`
-- Region: `asia-southeast1`
+- Region: `us-central1`
 - Cloud Run service: `checkpoint-api`
 - WIF pool: `github-actions`
 - WIF provider: `github`
@@ -197,7 +197,7 @@ Override a value when needed:
 
 ```bash
 PROJECT_ID="my-project" \
-REGION="asia-southeast1" \
+REGION="us-central1" \
 SERVICE="checkpoint-api" \
 ./scripts/setup-github-actions.sh
 ```
@@ -215,7 +215,7 @@ Add these repository variables:
 | Variable | Suggested value |
 | --- | --- |
 | `GCP_PROJECT_ID` | GCP project ID |
-| `GCP_REGION` | `asia-southeast1` |
+| `GCP_REGION` | `us-central1` |
 | `CLOUD_RUN_SERVICE` | `checkpoint-api` |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | Value of `$WIF_PROVIDER` |
 | `GCP_SERVICE_ACCOUNT` | Value of `$DEPLOY_SA` |

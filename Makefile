@@ -3,7 +3,7 @@
 
 # ---- Config (override on the CLI: `make deploy PROJECT_ID=my-proj`) ----
 SERVICE     ?= checkpoint-api
-REGION      ?= asia-southeast1
+REGION      ?= us-central1
 PROJECT_ID  ?= $(shell gcloud config get-value project 2>/dev/null)
 BIN         ?= bin/server
 PORT        ?= 8080
