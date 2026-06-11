@@ -36,7 +36,7 @@ var badgeCatalog = []badgeDef{
 	{
 		Badge: Badge{Key: "night_owl", Name: "Cú đêm", Icon: "🦉",
 			Description: "Check-in trong khoảng 0–5h sáng"},
-		rule: func(s badgeStats) bool { return s.Hour >= 0 && s.Hour < 5 },
+		rule: func(s badgeStats) bool { return s.CheckpointCount >= 1 && s.Hour >= 0 && s.Hour < 5 },
 	},
 	{
 		Badge: Badge{Key: "journey_starter", Name: "Kẻ lữ hành", Icon: "🧳",

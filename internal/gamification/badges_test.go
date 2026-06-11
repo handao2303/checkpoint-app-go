@@ -24,6 +24,10 @@ func TestSatisfiedBadges(t *testing.T) {
 			[]string{"first_checkin", "provinces_5"},
 		},
 		{"night owl", badgeStats{CheckpointCount: 1, Hour: 3}, []string{"first_checkin", "night_owl"}},
+		{"night owl at midnight", badgeStats{CheckpointCount: 1, Hour: 0}, []string{"first_checkin", "night_owl"}},
+		{"night owl before cutoff", badgeStats{CheckpointCount: 1, Hour: 4}, []string{"first_checkin", "night_owl"}},
+		{"not night owl at cutoff", badgeStats{CheckpointCount: 1, Hour: 5}, []string{"first_checkin"}},
+		{"not night owl without checkin", badgeStats{Hour: 3}, nil},
 		{"journey starter", badgeStats{CheckpointCount: 1, JourneyCount: 1, Hour: 12}, []string{"first_checkin", "journey_starter"}},
 	}
 	for _, tt := range tests {
