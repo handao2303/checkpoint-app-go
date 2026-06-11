@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,43 +152,8 @@ func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 
 	province := firstNonEmpty(payload.Address.State, payload.Address.City, payload.Address.County)
 
-	parts := strings.Split(payload.DisplayName, ",")
-
-	// Trim khoảng trắng thừa cho từng phần tử trong mảng
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-
-	// 2. Tìm index của province trong mảng
-	provinceIdx := -1
-	for i, part := range parts {
-		if part == province {
-			provinceIdx = i
-			break
-		}
-	}
-
-	displayName := payload.DisplayName
-
-	// 3. Nếu tìm thấy province, tiến hành bóc tách theo quy luật
-	if provinceIdx != -1 {
-		startIdx := provinceIdx - 1
-		endIdx := provinceIdx + 1
-
-		// Ràng buộc boundary để tránh panics lỗi out of range index
-		if startIdx < 0 {
-			startIdx = 0
-		}
-		if endIdx >= len(parts) {
-			endIdx = len(parts) - 1
-		}
-
-		// Cắt mảng từ [province - 1] đến [province + 1] và gộp lại bằng ", "
-		displayName = strings.Join(parts[startIdx:endIdx+1], ", ")
-	}
-
 	r := result{
-		displayName: displayName,
+		displayName: getDisplayName(payload.DisplayName, province),
 		province:    province,
 	}
 
@@ -195,6 +161,30 @@ func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 	c.cache[key] = r
 	c.cacheMu.Unlock()
 	return r, nil
+}
+
+func getDisplayName(full, province string) string {
+	displayName := full
+	parts := strings.Split(full, ",")
+
+	// 1. Tìm index của province trực tiếp bằng cách so sánh chuỗi đã trim
+	provinceIdx := slices.IndexFunc(parts, func(s string) bool {
+		return strings.TrimSpace(s) == province
+	})
+
+	// 2. Nếu tìm thấy, cắt mảng và dọn dẹp khoảng trắng 1 lượt bằng strings.Join
+	if provinceIdx != -1 {
+		start := max(0, provinceIdx-1)
+		end := min(len(parts)-1, provinceIdx+1)
+
+		// Gom các phần tử cần thiết
+		subParts := parts[start : end+1]
+		for i := range subParts {
+			subParts[i] = strings.TrimSpace(subParts[i])
+		}
+		displayName = strings.Join(subParts, ", ")
+	}
+	return displayName
 }
 
 // firstNonEmpty returns the first trimmed non-empty string.
