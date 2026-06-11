@@ -4,7 +4,8 @@ import "time"
 
 // XP event types (the `type` column on xp_events).
 const (
-	EventCheckin = "checkin"
+	EventCheckin        = "checkin"
+	EventCheckinDeleted = "checkin_deleted" // negative-XP reversal on hard delete
 )
 
 // XPEvent is an append-only record of an XP award (audit + future analytics).

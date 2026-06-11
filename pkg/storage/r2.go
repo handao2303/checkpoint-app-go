@@ -1,7 +1,7 @@
 // Package storage provides a Cloudflare R2 object-storage client.
 //
-// R2 is S3-compatible, so this is a minimal AWS Signature V4 PutObject
-// implementation using only the standard library — no AWS SDK dependency.
+// R2 is S3-compatible, so this is a minimal AWS Signature V4 implementation
+// (PutObject + DeleteObject) using only the standard library — no AWS SDK.
 package storage
 
 import (
@@ -83,7 +83,7 @@ func (c *R2) Upload(ctx context.Context, key, contentType string, body io.Reader
 	req.Header.Set("X-Amz-Date", amzDate)
 	req.ContentLength = int64(len(payload))
 	req.Header.Set("Authorization",
-		c.authorization(canonicalURI, contentType, payloadHash, amzDate, dateStamp))
+		c.authorization(http.MethodPut, canonicalURI, contentType, payloadHash, amzDate, dateStamp))
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -97,16 +97,52 @@ func (c *R2) Upload(ctx context.Context, key, contentType string, body io.Reader
 	return key, nil
 }
 
-// authorization builds the SigV4 Authorization header value for a PutObject.
-func (c *R2) authorization(canonicalURI, contentType, payloadHash, amzDate, dateStamp string) string {
-	const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date"
-	canonicalHeaders := "content-type:" + contentType + "\n" +
-		"host:" + c.host + "\n" +
+// Delete removes the object stored under key. Deleting a missing object is not
+// an error (S3 DELETE is idempotent and returns 204 either way).
+func (c *R2) Delete(ctx context.Context, key string) error {
+	canonicalURI := "/" + c.cfg.Bucket + "/" + uriEncodePath(key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		"https://"+c.host+canonicalURI, nil)
+	if err != nil {
+		return fmt.Errorf("build delete request: %w", err)
+	}
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	payloadHash := hexSHA256(nil) // empty body
+
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.Header.Set("Authorization",
+		c.authorization(http.MethodDelete, canonicalURI, "", payloadHash, amzDate, dateStamp))
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete from r2: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return fmt.Errorf("r2 delete failed: status %d: %s", resp.StatusCode, msg)
+	}
+	return nil
+}
+
+// authorization builds the SigV4 Authorization header value. contentType may be
+// empty (e.g. DELETE requests), in which case it's left out of the signature.
+func (c *R2) authorization(method, canonicalURI, contentType, payloadHash, amzDate, dateStamp string) string {
+	signedHeaders := "host;x-amz-content-sha256;x-amz-date"
+	canonicalHeaders := "host:" + c.host + "\n" +
 		"x-amz-content-sha256:" + payloadHash + "\n" +
 		"x-amz-date:" + amzDate + "\n"
+	if contentType != "" {
+		signedHeaders = "content-type;" + signedHeaders
+		canonicalHeaders = "content-type:" + contentType + "\n" + canonicalHeaders
+	}
 
 	canonicalRequest := strings.Join([]string{
-		http.MethodPut, canonicalURI, "", canonicalHeaders, signedHeaders, payloadHash,
+		method, canonicalURI, "", canonicalHeaders, signedHeaders, payloadHash,
 	}, "\n")
 
 	scope := dateStamp + "/" + r2Region + "/" + r2Service + "/aws4_request"

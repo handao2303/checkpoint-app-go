@@ -3,6 +3,8 @@ package checkpoint
 import (
 	"context"
 	"errors"
+	"io"
+	"slices"
 	"testing"
 )
 
@@ -11,6 +13,8 @@ type fakeRepo struct {
 	lastCreate   *CreateParams
 	createResult *CreateResult
 	createErr    error
+	deleteKeys   []string
+	deleteErr    error
 }
 
 func (f *fakeRepo) Create(_ context.Context, p CreateParams) (*CreateResult, error) {
@@ -36,7 +40,23 @@ func (f *fakeRepo) AddImages(context.Context, string, []string, int) ([]Image, e
 	return nil, nil
 }
 func (f *fakeRepo) CountImages(context.Context, string) (int, error) { return 0, nil }
-func (f *fakeRepo) Delete(context.Context, string, string) error     { return nil }
+func (f *fakeRepo) Delete(context.Context, string, string) ([]string, error) {
+	return f.deleteKeys, f.deleteErr
+}
+
+// fakeStorage records deleted keys (uploads are unused in these tests).
+type fakeStorage struct {
+	deleted []string
+}
+
+func (f *fakeStorage) Upload(_ context.Context, key, _ string, _ io.Reader) (string, error) {
+	return key, nil
+}
+
+func (f *fakeStorage) Delete(_ context.Context, key string) error {
+	f.deleted = append(f.deleted, key)
+	return nil
+}
 
 func ratingPtr(v int16) *int16   { return &v }
 func stringPtr(v string) *string { return &v }
@@ -188,5 +208,37 @@ func TestServiceCreate_UsesActiveJourney(t *testing.T) {
 	}
 	if repo.lastCreate.JourneyID == nil || *repo.lastCreate.JourneyID != jid {
 		t.Errorf("JourneyID = %v, want %q", repo.lastCreate.JourneyID, jid)
+	}
+}
+
+func TestServiceDelete_CleansUpStorage(t *testing.T) {
+	repo := &fakeRepo{deleteKeys: []string{
+		"checkpoints/cp1/a.jpg",
+		"https://cdn.example.com/legacy-full-url.jpg", // legacy row — must be skipped
+		"checkpoints/cp1/b.jpg",
+	}}
+	storage := &fakeStorage{}
+	svc := NewService(repo, storage, nil, nil)
+
+	if err := svc.Delete(context.Background(), "cp1", "user1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{"checkpoints/cp1/a.jpg", "checkpoints/cp1/b.jpg"}
+	if !slices.Equal(storage.deleted, want) {
+		t.Errorf("deleted keys = %v, want %v", storage.deleted, want)
+	}
+}
+
+func TestServiceDelete_NotFoundPropagates(t *testing.T) {
+	repo := &fakeRepo{deleteErr: ErrNotFound}
+	storage := &fakeStorage{}
+	svc := NewService(repo, storage, nil, nil)
+
+	if err := svc.Delete(context.Background(), "cp1", "user1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if len(storage.deleted) != 0 {
+		t.Errorf("storage.deleted = %v, want empty (no cleanup on failure)", storage.deleted)
 	}
 }

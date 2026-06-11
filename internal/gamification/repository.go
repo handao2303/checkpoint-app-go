@@ -27,7 +27,9 @@ func NewRepository(db *pgxpool.Pool, mediaBase string) *Repository {
 
 // AwardXPTx adds XP to a user within an existing transaction, recomputes their
 // level, and appends an xp_event — all under a SELECT ... FOR UPDATE row lock so
-// concurrent awards can't lose an increment. Returns the new total and level.
+// concurrent awards can't lose an increment. amount may be negative (a reversal,
+// e.g. deleting a check-in); the stored total never drops below zero. Returns
+// the new total and level.
 //
 // It deliberately does NOT touch action-specific counters (e.g.
 // checkpoint_count); the caller owns those.
@@ -39,6 +41,9 @@ func (r *Repository) AwardXPTx(
 		return 0, 0, fmt.Errorf("lock user xp: %w", err)
 	}
 	totalXP += amount
+	if totalXP < 0 {
+		totalXP = 0
+	}
 	level = LevelForXP(totalXP)
 
 	if _, err = tx.Exec(ctx,

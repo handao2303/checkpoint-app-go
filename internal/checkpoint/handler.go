@@ -198,11 +198,16 @@ func parseFloats(parts []string) ([]float64, bool) {
 	return out, true
 }
 
-// Delete soft-deletes the caller's checkpoint.
+// Delete hard-deletes the caller's checkpoint (images, XP and place side
+// effects reversed; an orphaned place is removed too).
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	if err := h.svc.Delete(r.Context(), chi.URLParam(r, "id"), p.UserID); err != nil {
-		respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		if errors.Is(err, ErrNotFound) {
+			respond.Error(w, http.StatusNotFound, "checkpoint not found")
+			return
+		}
+		respond.Error(w, http.StatusInternalServerError, "could not delete checkpoint")
 		return
 	}
 	respond.JSON(w, http.StatusNoContent, nil)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 )
 
@@ -37,12 +38,13 @@ type repository interface {
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
 	AddImages(ctx context.Context, checkpointID string, urls []string, startOrder int) ([]Image, error)
 	CountImages(ctx context.Context, checkpointID string) (int, error)
-	Delete(ctx context.Context, id, userID string) error
+	Delete(ctx context.Context, id, userID string) (imageKeys []string, err error)
 }
 
-// fileStorage uploads an object and returns its public URL.
+// fileStorage stores and removes image objects.
 type fileStorage interface {
 	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
+	Delete(ctx context.Context, key string) error
 }
 
 type reverseGeocoder interface {
@@ -236,7 +238,23 @@ func (s *Service) ListMine(ctx context.Context, userID string, limit int) ([]*Ch
 	return s.repo.ListByUser(ctx, userID, limit)
 }
 
-// Delete soft-deletes a checkpoint the caller owns.
+// Delete hard-deletes a checkpoint the caller owns (XP/stats reversed, orphaned
+// place removed), then best-effort removes its images from storage — the DB is
+// the source of truth and an orphaned file is harmless, so storage errors are
+// only logged.
 func (s *Service) Delete(ctx context.Context, id, userID string) error {
-	return s.repo.Delete(ctx, id, userID)
+	keys, err := s.repo.Delete(ctx, id, userID)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		// Legacy rows stored full URLs instead of keys — nothing to delete there.
+		if key == "" || strings.HasPrefix(key, "http://") || strings.HasPrefix(key, "https://") {
+			continue
+		}
+		if err := s.storage.Delete(ctx, key); err != nil {
+			log.Printf("delete checkpoint image %q: %v", key, err)
+		}
+	}
+	return nil
 }

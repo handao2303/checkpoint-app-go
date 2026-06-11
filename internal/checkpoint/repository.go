@@ -290,17 +290,86 @@ func (r *Repository) CountImages(ctx context.Context, checkpointID string) (int,
 	return n, nil
 }
 
-// Delete soft-deletes a checkpoint owned by userID. Returns ErrNotFound if it
-// doesn't exist or belongs to someone else.
-func (r *Repository) Delete(ctx context.Context, id, userID string) error {
-	tag, err := r.db.Exec(ctx,
-		`UPDATE checkpoints SET deleted_at = NOW()
-		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID)
+// Delete HARD-deletes a checkpoint owned by userID, atomically reversing its
+// side effects: XP/level (negative xp_event), checkpoint_count, the place's
+// checkin_count — and the place itself if it becomes orphaned. Returns the R2
+// image keys for post-commit cleanup, or ErrNotFound if the checkpoint doesn't
+// exist or belongs to someone else.
+func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys []string, err error) {
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("delete checkpoint: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Owner check + grab what we need before the row is gone. FOR UPDATE blocks
+	// a concurrent double-delete of the same checkpoint.
+	var placeID *string
+	var xpAwarded int
+	err = tx.QueryRow(ctx,
+		`SELECT place_id, xp_awarded FROM checkpoints
+		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
+		id, userID).Scan(&placeID, &xpAwarded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
 	}
-	return nil
+	if err != nil {
+		return nil, fmt.Errorf("load checkpoint for delete: %w", err)
+	}
+
+	// Collect image keys so the caller can clean up R2 after commit.
+	rows, err := tx.Query(ctx,
+		`SELECT object_key FROM checkpoint_images WHERE checkpoint_id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list image keys: %w", err)
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan image key: %w", err)
+		}
+		imageKeys = append(imageKeys, key)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate image keys: %w", err)
+	}
+
+	// Hard delete; checkpoint_images rows go with it (ON DELETE CASCADE).
+	if _, err := tx.Exec(ctx, `DELETE FROM checkpoints WHERE id = $1`, id); err != nil {
+		return nil, fmt.Errorf("delete checkpoint: %w", err)
+	}
+
+	// Reverse the XP award (locks the user row, recomputes level, logs a
+	// negative xp_event) and the checkpoint counter.
+	if _, _, err := r.xp.AwardXPTx(ctx, tx, userID, -xpAwarded, "checkin_deleted", id); err != nil {
+		return nil, fmt.Errorf("reverse xp: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE users SET checkpoint_count = GREATEST(checkpoint_count - 1, 0), updated_at = NOW()
+		 WHERE id = $1`, userID); err != nil {
+		return nil, fmt.Errorf("drop checkpoint_count: %w", err)
+	}
+
+	// Un-count the place; if no checkpoint references it anymore it's orphaned —
+	// hard-delete it too.
+	if placeID != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE places SET checkin_count = GREATEST(checkin_count - 1, 0), updated_at = NOW()
+			 WHERE id = $1`, placeID); err != nil {
+			return nil, fmt.Errorf("drop place checkin_count: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM places p WHERE p.id = $1
+			 AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.place_id = p.id)`,
+			placeID); err != nil {
+			return nil, fmt.Errorf("delete orphaned place: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit delete: %w", err)
+	}
+	return imageKeys, nil
 }
