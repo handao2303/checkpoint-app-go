@@ -63,6 +63,10 @@ make deploy
 `make deploy` builds from source and sends runtime values from local `.env` to
 Cloud Run as plain environment variables. It does not use Secret Manager.
 
+Rate limiting is enabled by default with `120` requests per minute and a burst
+of `30`, per Cloud Run instance. Authenticated routes also apply the same quota
+per user ID. `OPTIONS` and `/health` are exempt.
+
 ## 5. GitHub Actions deploy
 
 `.github/workflows/deploy.yml` runs on pushes to `main` and manual dispatches:
@@ -229,6 +233,9 @@ Add these repository variables:
 | `GEOCODER_ENABLED` | `true` |
 | `NOMINATIM_BASE_URL` | `https://nominatim.openstreetmap.org` |
 | `NOMINATIM_USER_AGENT` | App-identifying user agent |
+| `RATE_LIMIT_ENABLED` | `true` |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `120` |
+| `RATE_LIMIT_BURST` | `30` |
 
 ### 5.5 Configure GitHub repository secrets
 

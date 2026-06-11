@@ -76,6 +76,7 @@ func run() error {
 	corsOpts := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Authorization", "Content-Type"},
+		ExposedHeaders: []string{"Retry-After"},
 		MaxAge:         300,
 	}
 	if cfg.env == "production" {
@@ -97,15 +98,22 @@ func run() error {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(corsOpts))
 	r.Use(chimw.RequestID, chimw.Logger, chimw.Recoverer)
+	ipLimiter := appmw.NewRateLimiter(cfg.rateLimit)
+	userLimiter := appmw.NewRateLimiter(cfg.rateLimit)
+	r.Use(ipLimiter.ByIP)
 	r.Use(chimw.Timeout(30 * time.Second))
 
 	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
 		respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	identityHandler.Register(r, appmw.Auth(tokens))
-	checkpointHandler.Register(r, appmw.Auth(tokens))
-	placeHandler.Register(r, appmw.Auth(tokens))
-	journeyHandler.Register(r, appmw.Auth(tokens))
+	auth := appmw.Auth(tokens)
+	authenticated := func(next http.Handler) http.Handler {
+		return auth(userLimiter.ByUser(next))
+	}
+	identityHandler.Register(r, authenticated)
+	checkpointHandler.Register(r, authenticated)
+	placeHandler.Register(r, authenticated)
+	journeyHandler.Register(r, authenticated)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -148,6 +156,7 @@ type config struct {
 	refreshTTL  time.Duration
 	r2          storage.R2Config
 	geocoder    geocode.Config
+	rateLimit   appmw.RateLimitConfig
 }
 
 func loadConfig() (config, error) {
@@ -170,6 +179,9 @@ func loadConfig() (config, error) {
 			BaseURL:   getEnv("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"),
 			UserAgent: getEnv("NOMINATIM_USER_AGENT", "checkpoint-app/0.1"),
 		},
+		rateLimit: appmw.RateLimitConfig{
+			Enabled: boolEnv("RATE_LIMIT_ENABLED", true),
+		},
 	}
 
 	var err error
@@ -177,6 +189,12 @@ func loadConfig() (config, error) {
 		return cfg, err
 	}
 	if cfg.refreshTTL, err = durationEnv("JWT_REFRESH_TTL", 168*time.Hour); err != nil {
+		return cfg, err
+	}
+	if cfg.rateLimit.RequestsPerMinute, err = positiveIntEnv("RATE_LIMIT_REQUESTS_PER_MINUTE", 120); err != nil {
+		return cfg, err
+	}
+	if cfg.rateLimit.Burst, err = positiveIntEnv("RATE_LIMIT_BURST", 30); err != nil {
 		return cfg, err
 	}
 
@@ -220,6 +238,18 @@ func boolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 	return value
+}
+
+func positiveIntEnv(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", key)
+	}
+	return value, nil
 }
 
 // durationEnv parses a duration env var, ignoring any trailing inline comment

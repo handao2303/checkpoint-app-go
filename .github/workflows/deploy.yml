@@ -99,6 +99,9 @@ jobs:
       GEOCODER_ENABLED: ${{ vars.GEOCODER_ENABLED }}
       NOMINATIM_BASE_URL: ${{ vars.NOMINATIM_BASE_URL }}
       NOMINATIM_USER_AGENT: ${{ vars.NOMINATIM_USER_AGENT }}
+      RATE_LIMIT_ENABLED: ${{ vars.RATE_LIMIT_ENABLED }}
+      RATE_LIMIT_REQUESTS_PER_MINUTE: ${{ vars.RATE_LIMIT_REQUESTS_PER_MINUTE }}
+      RATE_LIMIT_BURST: ${{ vars.RATE_LIMIT_BURST }}
 
     outputs:
       service_url: ${{ steps.service.outputs.url }}
@@ -116,6 +119,7 @@ jobs:
             DATABASE_URL JWT_SECRET CORS_ALLOWED_ORIGINS
             JWT_ACCESS_TTL JWT_REFRESH_TTL SUPABASE_URL
             GEOCODER_ENABLED NOMINATIM_BASE_URL NOMINATIM_USER_AGENT
+            RATE_LIMIT_ENABLED RATE_LIMIT_REQUESTS_PER_MINUTE RATE_LIMIT_BURST
           )
 
           missing=()
@@ -161,6 +165,9 @@ jobs:
             --arg GEOCODER_ENABLED "$GEOCODER_ENABLED" \
             --arg NOMINATIM_BASE_URL "$NOMINATIM_BASE_URL" \
             --arg NOMINATIM_USER_AGENT "$NOMINATIM_USER_AGENT" \
+            --arg RATE_LIMIT_ENABLED "$RATE_LIMIT_ENABLED" \
+            --arg RATE_LIMIT_REQUESTS_PER_MINUTE "$RATE_LIMIT_REQUESTS_PER_MINUTE" \
+            --arg RATE_LIMIT_BURST "$RATE_LIMIT_BURST" \
             '{
               ENV: $APP_ENV,
               CORS_ALLOWED_ORIGINS: $CORS_ALLOWED_ORIGINS,
@@ -176,7 +183,10 @@ jobs:
               R2_PUBLIC_URL: $R2_PUBLIC_URL,
               GEOCODER_ENABLED: $GEOCODER_ENABLED,
               NOMINATIM_BASE_URL: $NOMINATIM_BASE_URL,
-              NOMINATIM_USER_AGENT: $NOMINATIM_USER_AGENT
+              NOMINATIM_USER_AGENT: $NOMINATIM_USER_AGENT,
+              RATE_LIMIT_ENABLED: $RATE_LIMIT_ENABLED,
+              RATE_LIMIT_REQUESTS_PER_MINUTE: $RATE_LIMIT_REQUESTS_PER_MINUTE,
+              RATE_LIMIT_BURST: $RATE_LIMIT_BURST
             }' > "$runtime_env"
 
           if ! jq -e 'all(.[]; type == "string")' "$runtime_env" >/dev/null; then
