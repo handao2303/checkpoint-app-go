@@ -1,6 +1,10 @@
 package checkpoint
 
-import "time"
+import (
+	"time"
+
+	"github.com/quanluon/checkpoint-app/internal/gamification"
+)
 
 // Checkpoint is a check-in at a GPS location.
 type Checkpoint struct {
@@ -40,11 +44,11 @@ type CreateParams struct {
 // CreateResult is the outcome of a check-in: the new checkpoint plus the user's
 // updated XP/level (computed atomically with the insert).
 type CreateResult struct {
-	Checkpoint *Checkpoint `json:"checkpoint"`
-	XPAwarded  int         `json:"xp_awarded"`
-	TotalXP    int         `json:"total_xp"`
-	Level      int         `json:"level"`
-	NewBadges  []string    `json:"new_badges,omitempty"` // badge keys unlocked by this check-in
+	Checkpoint *Checkpoint          `json:"checkpoint"`
+	XPAwarded  int                  `json:"xp_awarded"`
+	TotalXP    int                  `json:"total_xp"`
+	Level      int                  `json:"level"`
+	NewBadges  []gamification.Badge `json:"new_badges,omitempty"` // badges unlocked by this check-in
 }
 
 // Image is a photo attached to a checkpoint.

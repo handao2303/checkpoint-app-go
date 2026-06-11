@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/quanluon/checkpoint-app/internal/gamification"
 	"github.com/quanluon/checkpoint-app/internal/place"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
 )
@@ -27,7 +28,7 @@ type placeResolver interface {
 // checkpoint decoupled from the gamification package.
 type gamificationTx interface {
 	AwardXPTx(ctx context.Context, tx pgx.Tx, userID string, amount int, eventType, refID string) (totalXP, level int, err error)
-	EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) (awarded []string, err error)
+	EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) (awarded []gamification.Badge, err error)
 }
 
 // Repository is the Postgres data layer for checkpoints.

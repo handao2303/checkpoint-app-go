@@ -146,9 +146,9 @@ func (r *Repository) TopByXP(ctx context.Context, limit int) ([]LeaderboardEntry
 }
 
 // EvaluateBadgesTx computes the user's badge stats inside the check-in tx and
-// awards any newly-satisfied badges (idempotently). Returns the keys awarded by
-// THIS call, so the caller can surface them (e.g. a toast).
-func (r *Repository) EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) ([]string, error) {
+// awards any newly-satisfied badges (idempotently). Returns the badges awarded
+// by THIS call (with display metadata), so the caller can surface them.
+func (r *Repository) EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) ([]Badge, error) {
 	var s badgeStats
 	if err := tx.QueryRow(ctx,
 		`SELECT
@@ -178,13 +178,15 @@ func (r *Repository) EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID str
 	}
 	defer rows.Close()
 
-	var awarded []string
+	var awarded []Badge
 	for rows.Next() {
 		var key string
 		if err := rows.Scan(&key); err != nil {
 			return nil, fmt.Errorf("scan awarded badge: %w", err)
 		}
-		awarded = append(awarded, key)
+		if b, ok := badgeByKey(key); ok {
+			awarded = append(awarded, b)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate awarded badges: %w", err)

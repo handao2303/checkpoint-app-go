@@ -55,3 +55,13 @@ func satisfiedBadges(s badgeStats) []string {
 	}
 	return keys
 }
+
+// badgeByKey looks up a badge definition by key.
+func badgeByKey(key string) (Badge, bool) {
+	for _, b := range badgeCatalog {
+		if b.Key == key {
+			return b.Badge, true
+		}
+	}
+	return Badge{}, false
+}
