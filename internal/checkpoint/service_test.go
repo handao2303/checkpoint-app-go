@@ -42,14 +42,19 @@ func ratingPtr(v int16) *int16   { return &v }
 func stringPtr(v string) *string { return &v }
 
 type fakeGeocoder struct {
-	calls   int
-	address string
-	err     error
+	calls    int
+	address  string
+	province string
+	err      error
 }
 
 func (f *fakeGeocoder) Reverse(context.Context, float64, float64) (string, error) {
 	f.calls++
 	return f.address, f.err
+}
+
+func (f *fakeGeocoder) Province(context.Context, float64, float64) (string, error) {
+	return f.province, f.err
 }
 
 func TestServiceCreate_AwardsCheckinXP(t *testing.T) {

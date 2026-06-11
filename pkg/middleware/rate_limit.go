@@ -1,6 +1,8 @@
 package middleware
 
 import (
+	"context"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -20,11 +22,21 @@ const (
 	defaultRateLimitCleanupInterval = time.Minute
 )
 
-// RateLimitConfig controls an in-memory token-bucket limiter.
+var sharedStoreLogState struct {
+	sync.Mutex
+	last time.Time
+}
+
+// RateLimitConfig controls token-bucket rate limiting.
 type RateLimitConfig struct {
 	Enabled           bool
 	RequestsPerMinute int
 	Burst             int
+}
+
+// RateLimitStore checks and consumes rate-limit tokens from a shared store.
+type RateLimitStore interface {
+	Allow(ctx context.Context, key string) (bool, error)
 }
 
 type rateLimitEntry struct {
@@ -32,13 +44,15 @@ type rateLimitEntry struct {
 	lastSeen time.Time
 }
 
-// RateLimiter holds independent token buckets keyed by IP or authenticated user.
-// Its limits apply per process, so Cloud Run instances do not share quota.
+// RateLimiter uses a shared store when configured and falls back to independent
+// in-memory token buckets when that store is unavailable.
 type RateLimiter struct {
 	enabled         bool
 	limit           rate.Limit
 	burst           int
 	retryAfter      string
+	keyPrefix       string
+	store           RateLimitStore
 	entryTTL        time.Duration
 	cleanupInterval time.Duration
 	now             func() time.Time
@@ -48,14 +62,25 @@ type RateLimiter struct {
 	lastCleanup time.Time
 }
 
-// NewRateLimiter builds a concurrency-safe in-memory limiter.
-func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
+// RateLimiterOption customizes a RateLimiter.
+type RateLimiterOption func(*RateLimiter)
+
+// WithRateLimitStore configures a shared primary store and key namespace.
+func WithRateLimitStore(store RateLimitStore, keyPrefix string) RateLimiterOption {
+	return func(l *RateLimiter) {
+		l.store = store
+		l.keyPrefix = keyPrefix
+	}
+}
+
+// NewRateLimiter builds a concurrency-safe limiter.
+func NewRateLimiter(cfg RateLimitConfig, opts ...RateLimiterOption) *RateLimiter {
 	requestsPerMinute := max(cfg.RequestsPerMinute, 1)
 	burst := max(cfg.Burst, 1)
 	retrySeconds := max(int(math.Ceil(60/float64(requestsPerMinute))), 1)
 	now := time.Now
 
-	return &RateLimiter{
+	limiter := &RateLimiter{
 		enabled:         cfg.Enabled,
 		limit:           rate.Limit(float64(requestsPerMinute) / 60),
 		burst:           burst,
@@ -66,6 +91,10 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 		entries:         make(map[string]*rateLimitEntry),
 		lastCleanup:     now(),
 	}
+	for _, opt := range opts {
+		opt(limiter)
+	}
+	return limiter
 }
 
 // ByIP rate-limits requests by the first valid X-Forwarded-For address,
@@ -94,7 +123,7 @@ func (l *RateLimiter) middleware(keyFn func(*http.Request) string, next http.Han
 		}
 
 		key := keyFn(r)
-		if key == "" || l.allow(key) {
+		if key == "" || l.allow(r.Context(), key) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -104,7 +133,18 @@ func (l *RateLimiter) middleware(keyFn func(*http.Request) string, next http.Han
 	})
 }
 
-func (l *RateLimiter) allow(key string) bool {
+func (l *RateLimiter) allow(ctx context.Context, key string) bool {
+	if l.store != nil {
+		allowed, err := l.store.Allow(ctx, l.keyPrefix+key)
+		if err == nil {
+			return allowed
+		}
+		l.logStoreFailure(err)
+	}
+	return l.allowLocal(key)
+}
+
+func (l *RateLimiter) allowLocal(key string) bool {
 	now := l.now()
 
 	l.mu.Lock()
@@ -123,6 +163,19 @@ func (l *RateLimiter) allow(key string) bool {
 	}
 	entry.lastSeen = now
 	return entry.limiter.AllowN(now, 1)
+}
+
+func (l *RateLimiter) logStoreFailure(err error) {
+	now := l.now()
+
+	sharedStoreLogState.Lock()
+	defer sharedStoreLogState.Unlock()
+
+	if now.Sub(sharedStoreLogState.last) < time.Minute {
+		return
+	}
+	sharedStoreLogState.last = now
+	log.Printf("rate limit shared store unavailable; using in-memory fallback: %v", err)
 }
 
 func (l *RateLimiter) cleanup(now time.Time) {

@@ -24,6 +24,10 @@ type User struct {
 	JourneyCount    int       `json:"journey_count"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
+
+	// Derived (not stored): progress toward the next level, computed on read.
+	XPToNext      int     `json:"xp_to_next"`
+	LevelProgress float64 `json:"level_progress"`
 }
 
 // Claims is the payload of our own (backend-issued) access token.

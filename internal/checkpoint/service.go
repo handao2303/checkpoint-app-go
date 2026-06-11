@@ -47,6 +47,7 @@ type fileStorage interface {
 
 type reverseGeocoder interface {
 	Reverse(ctx context.Context, lat, lng float64) (string, error)
+	Province(ctx context.Context, lat, lng float64) (string, error)
 }
 
 // activeJourneyReader returns the user's active journey id (or nil), so a
@@ -123,6 +124,16 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		}
 	}
 
+	// Province powers the digital passport (provinces visited). Best-effort.
+	var province *string
+	if s.geocoder != nil {
+		if p, err := s.geocoder.Province(ctx, in.Lat, in.Lng); err == nil {
+			if p = strings.TrimSpace(p); p != "" {
+				province = &p
+			}
+		}
+	}
+
 	return s.repo.Create(ctx, CreateParams{
 		UserID:    userID,
 		Name:      name,
@@ -132,6 +143,7 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		Lat:       in.Lat,
 		Lng:       in.Lng,
 		Address:   address,
+		Province:  province,
 		PlaceID:   in.PlaceID,
 		JourneyID: journeyID,
 		XPReward:  checkinXP,

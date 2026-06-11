@@ -100,11 +100,11 @@ func TestRateLimiterCleansInactiveEntries(t *testing.T) {
 	limiter.cleanupInterval = time.Minute
 	limiter.lastCleanup = now
 
-	if !limiter.allow("old") {
+	if !limiter.allowLocal("old") {
 		t.Fatal("first old request should be allowed")
 	}
 	now = now.Add(2 * time.Minute)
-	if !limiter.allow("new") {
+	if !limiter.allowLocal("new") {
 		t.Fatal("first new request should be allowed")
 	}
 

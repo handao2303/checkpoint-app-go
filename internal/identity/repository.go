@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/quanluon/checkpoint-app/internal/gamification"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
 )
 
@@ -50,6 +51,11 @@ func scanUser(row pgx.Row) (*User, error) {
 		&u.Role, &u.IsAnonymous, &u.TotalXP, &u.Level, &u.CheckpointCount, &u.JourneyCount,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
+	if err == nil {
+		// Attach derived level progress so every user read exposes it.
+		p := gamification.XPProgress(u.TotalXP)
+		u.XPToNext, u.LevelProgress = p.XPToNext, p.LevelProgress
+	}
 	return &u, err
 }
 

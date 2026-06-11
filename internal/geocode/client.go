@@ -37,10 +37,16 @@ type Client struct {
 	rateInterval time.Duration
 
 	cacheMu sync.RWMutex
-	cache   map[string]string
+	cache   map[string]result
 
 	rateMu      sync.Mutex
 	lastRequest time.Time
+}
+
+// result is the cached reverse-geocode lookup for a coordinate.
+type result struct {
+	displayName string
+	province    string
 }
 
 // NewClient builds a reverse-geocoding client.
@@ -64,31 +70,46 @@ func NewClient(cfg Config) *Client {
 		userAgent:    strings.TrimSpace(cfg.UserAgent),
 		httpClient:   &http.Client{Timeout: timeout},
 		rateInterval: interval,
-		cache:        make(map[string]string),
+		cache:        make(map[string]result),
 	}
 }
 
 // Reverse returns Nominatim's display_name for the given coordinates.
 func (c *Client) Reverse(ctx context.Context, lat, lng float64) (string, error) {
+	r, err := c.lookup(ctx, lat, lng)
+	return r.displayName, err
+}
+
+// Province returns the province/state name for the given coordinates (Vietnam
+// provinces map to Nominatim's `state`, with city/county as fallbacks). Empty
+// when unknown or the geocoder is disabled.
+func (c *Client) Province(ctx context.Context, lat, lng float64) (string, error) {
+	r, err := c.lookup(ctx, lat, lng)
+	return r.province, err
+}
+
+// lookup performs (and caches) a single reverse-geocode for a coordinate,
+// extracting both the display name and the province.
+func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 	if !c.enabled {
-		return "", nil
+		return result{}, nil
 	}
 
 	key := fmt.Sprintf("%.6f,%.6f", lat, lng)
 	c.cacheMu.RLock()
-	address, ok := c.cache[key]
+	cached, ok := c.cache[key]
 	c.cacheMu.RUnlock()
 	if ok {
-		return address, nil
+		return cached, nil
 	}
 
 	if err := c.waitForRateLimit(ctx); err != nil {
-		return "", err
+		return result{}, err
 	}
 
 	endpoint, err := url.Parse(c.baseURL + "/reverse")
 	if err != nil {
-		return "", fmt.Errorf("parse geocoder URL: %w", err)
+		return result{}, fmt.Errorf("parse geocoder URL: %w", err)
 	}
 	query := endpoint.Query()
 	query.Set("format", "jsonv2")
@@ -101,7 +122,7 @@ func (c *Client) Reverse(ctx context.Context, lat, lng float64) (string, error) 
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return "", fmt.Errorf("build geocoder request: %w", err)
+		return result{}, fmt.Errorf("build geocoder request: %w", err)
 	}
 	if c.userAgent != "" {
 		req.Header.Set("User-Agent", c.userAgent)
@@ -109,28 +130,44 @@ func (c *Client) Reverse(ctx context.Context, lat, lng float64) (string, error) 
 
 	res, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("reverse geocode request: %w", err)
+		return result{}, fmt.Errorf("reverse geocode request: %w", err)
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("reverse geocode status: %s", res.Status)
+		return result{}, fmt.Errorf("reverse geocode status: %s", res.Status)
 	}
 
 	var payload struct {
 		DisplayName string `json:"display_name"`
+		Address     struct {
+			State  string `json:"state"`
+			City   string `json:"city"`
+			County string `json:"county"`
+		} `json:"address"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
-		return "", fmt.Errorf("decode reverse geocode response: %w", err)
+		return result{}, fmt.Errorf("decode reverse geocode response: %w", err)
 	}
-	address = strings.TrimSpace(payload.DisplayName)
-	if address == "" {
-		return "", nil
+
+	r := result{
+		displayName: strings.TrimSpace(payload.DisplayName),
+		province:    firstNonEmpty(payload.Address.State, payload.Address.City, payload.Address.County),
 	}
 
 	c.cacheMu.Lock()
-	c.cache[key] = address
+	c.cache[key] = r
 	c.cacheMu.Unlock()
-	return address, nil
+	return r, nil
+}
+
+// firstNonEmpty returns the first trimmed non-empty string.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (c *Client) waitForRateLimit(ctx context.Context) error {

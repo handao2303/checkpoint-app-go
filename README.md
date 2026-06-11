@@ -23,19 +23,22 @@ curl localhost:8080/health
 
 ## Rate limiting
 
-Backend dùng token bucket in-memory theo từng Cloud Run instance. Mọi request
-ngoài `OPTIONS` và `/health` chịu giới hạn theo IP; endpoint cần đăng nhập chịu
-thêm giới hạn riêng theo user ID. Khi vượt hạn mức, API trả HTTP `429` cùng
-header `Retry-After`.
+Backend dùng Redis token bucket để chia sẻ quota giữa các Cloud Run instance.
+Mọi request ngoài `OPTIONS` và `/health` chịu giới hạn theo IP; endpoint cần
+đăng nhập chịu thêm giới hạn riêng theo user ID. Khi Redis không khả dụng,
+backend tự fallback sang token bucket in-memory theo từng instance. Khi vượt
+hạn mức, API trả HTTP `429` cùng header `Retry-After`.
 
 ```env
 RATE_LIMIT_ENABLED=true
 RATE_LIMIT_REQUESTS_PER_MINUTE=120
 RATE_LIMIT_BURST=30
+REDIS_URL=rediss://default:password@redis-host:port
 ```
 
-Quota không được chia sẻ giữa các Cloud Run instance. Nếu cần giới hạn chính
-xác toàn service, thay store in-memory bằng shared store như Redis.
+`REDIS_URL` có thể để trống khi chạy local để chỉ dùng limiter in-memory. URL
+sai định dạng làm startup thất bại; lỗi kết nối Redis trong runtime không làm
+API ngừng phục vụ.
 
 ## Reverse geocoding
 

@@ -21,6 +21,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
+	"github.com/quanluon/checkpoint-app/internal/gamification"
 	"github.com/quanluon/checkpoint-app/internal/geocode"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
@@ -46,6 +47,14 @@ func run() error {
 	}
 
 	ctx := context.Background()
+	redisClient, err := appmw.NewRedisClient(cfg.redisURL)
+	if err != nil {
+		return err
+	}
+	if redisClient != nil {
+		defer func() { _ = redisClient.Close() }()
+	}
+
 	pool, err := pgxpool.New(ctx, cfg.databaseURL)
 	if err != nil {
 		return fmt.Errorf("connect db: %w", err)
@@ -67,11 +76,13 @@ func run() error {
 
 	geocoder := geocode.NewClient(cfg.geocoder)
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
+	gamificationRepo := gamification.NewRepository(pool, cfg.r2.PublicURL)
+	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo))
 	placeHandler := place.NewHandler(place.NewService(placeRepo))
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
 	checkpointHandler := checkpoint.NewHandler(
-		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo), r2, geocoder, journeyRepo))
+		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo), r2, geocoder, journeyRepo))
 
 	corsOpts := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -98,8 +109,14 @@ func run() error {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(corsOpts))
 	r.Use(chimw.RequestID, chimw.Logger, chimw.Recoverer)
-	ipLimiter := appmw.NewRateLimiter(cfg.rateLimit)
-	userLimiter := appmw.NewRateLimiter(cfg.rateLimit)
+	var ipLimiterOpts, userLimiterOpts []appmw.RateLimiterOption
+	if redisClient != nil {
+		store := appmw.NewRedisRateLimitStore(redisClient, cfg.rateLimit)
+		ipLimiterOpts = append(ipLimiterOpts, appmw.WithRateLimitStore(store, "checkpoint:rate-limit:ip:"))
+		userLimiterOpts = append(userLimiterOpts, appmw.WithRateLimitStore(store, "checkpoint:rate-limit:user:"))
+	}
+	ipLimiter := appmw.NewRateLimiter(cfg.rateLimit, ipLimiterOpts...)
+	userLimiter := appmw.NewRateLimiter(cfg.rateLimit, userLimiterOpts...)
 	r.Use(ipLimiter.ByIP)
 	r.Use(chimw.Timeout(30 * time.Second))
 
@@ -114,6 +131,7 @@ func run() error {
 	checkpointHandler.Register(r, authenticated)
 	placeHandler.Register(r, authenticated)
 	journeyHandler.Register(r, authenticated)
+	gamificationHandler.Register(r, authenticated)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -149,6 +167,7 @@ type config struct {
 	port        string
 	env         string
 	databaseURL string
+	redisURL    string
 	jwtSecret   string
 	supabaseURL string
 	corsOrigins []string
@@ -164,6 +183,7 @@ func loadConfig() (config, error) {
 		port:        getEnv("PORT", "8080"),
 		env:         getEnv("ENV", "development"),
 		databaseURL: os.Getenv("DATABASE_URL"),
+		redisURL:    os.Getenv("REDIS_URL"),
 		jwtSecret:   os.Getenv("JWT_SECRET"),
 		supabaseURL: os.Getenv("SUPABASE_URL"),
 		corsOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")),

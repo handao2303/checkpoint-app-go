@@ -64,8 +64,11 @@ make deploy
 Cloud Run as plain environment variables. It does not use Secret Manager.
 
 Rate limiting is enabled by default with `120` requests per minute and a burst
-of `30`, per Cloud Run instance. Authenticated routes also apply the same quota
-per user ID. `OPTIONS` and `/health` are exempt.
+of `30`. Set `REDIS_URL` to the connection URL of the existing Redis Cloud
+database so quota is shared across Cloud Run instances. Authenticated routes
+also apply the same quota per user ID. `OPTIONS` and `/health` are exempt.
+When Redis is unavailable, the backend falls back to an in-memory limiter per
+instance.
 
 ## 5. GitHub Actions deploy
 
@@ -207,6 +210,8 @@ SERVICE="checkpoint-api" \
 ```
 
 The script never prints secret values. Empty optional R2 values are skipped.
+It reads the existing Redis Cloud connection URL from local `REDIS_URL` and
+stores it as a GitHub repository secret.
 When run locally, it ignores an inherited `GITHUB_TOKEN` so GitHub CLI uses the
 credentials stored by `gh auth login`.
 
@@ -250,8 +255,11 @@ Add:
 - `JWT_SECRET`
 - `R2_ACCESS_KEY_ID`
 - `R2_ACCESS_KEY_SECRET`
+- `REDIS_URL`
 
 Do not add `GCP_SA_KEY`; WIF replaces long-lived JSON service account keys.
+Use a `redis://` or TLS `rediss://` connection URL from the existing Redis
+instance. Never add this value as a GitHub variable or commit it to the repo.
 
 ### 5.6 First deployment
 

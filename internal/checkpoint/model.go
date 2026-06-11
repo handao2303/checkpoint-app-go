@@ -31,6 +31,7 @@ type CreateParams struct {
 	Lat       float64
 	Lng       float64
 	Address   *string
+	Province  *string // resolved province for the passport (best-effort)
 	PlaceID   *string // optional: check-in to a specific place (else resolved)
 	JourneyID *string // optional: attach to a journey (else active journey)
 	XPReward  int
@@ -43,6 +44,7 @@ type CreateResult struct {
 	XPAwarded  int         `json:"xp_awarded"`
 	TotalXP    int         `json:"total_xp"`
 	Level      int         `json:"level"`
+	NewBadges  []string    `json:"new_badges,omitempty"` // badge keys unlocked by this check-in
 }
 
 // Image is a photo attached to a checkpoint.

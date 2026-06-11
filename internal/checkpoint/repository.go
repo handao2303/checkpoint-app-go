@@ -22,17 +22,27 @@ type placeResolver interface {
 	ResolveInTx(ctx context.Context, tx pgx.Tx, p place.ResolveParams) (string, error)
 }
 
+// gamificationTx applies XP + badge side effects inside the check-in
+// transaction (implemented by internal/gamification). Plain return types keep
+// checkpoint decoupled from the gamification package.
+type gamificationTx interface {
+	AwardXPTx(ctx context.Context, tx pgx.Tx, userID string, amount int, eventType, refID string) (totalXP, level int, err error)
+	EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) (awarded []string, err error)
+}
+
 // Repository is the Postgres data layer for checkpoints.
 type Repository struct {
 	db        *pgxpool.Pool
 	mediaBase string // R2 public base URL, prepended to image keys on read
 	places    placeResolver
+	xp        gamificationTx
 }
 
 // NewRepository builds a checkpoint repository over a pgx pool. mediaBase is the
-// public base URL for image keys; places resolves a check-in to a Place.
-func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver) *Repository {
-	return &Repository{db: db, mediaBase: mediaBase, places: places}
+// public base URL for image keys; places resolves a check-in to a Place; xp
+// applies the XP award, event log, and badge evaluation within the check-in tx.
+func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver, xp gamificationTx) *Repository {
+	return &Repository{db: db, mediaBase: mediaBase, places: places, xp: xp}
 }
 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
@@ -72,10 +82,10 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}
 
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, place_id, journey_id, xp_awarded)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, place_id, journey_id, xp_awarded)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 RETURNING `+cpColumns,
-		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, placeID, p.JourneyID, p.XPReward))
+		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, placeID, p.JourneyID, p.XPReward))
 	if err != nil {
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}
@@ -86,26 +96,32 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		return nil, fmt.Errorf("bump place checkin_count: %w", err)
 	}
 
-	var totalXP int
-	if err := tx.QueryRow(ctx,
-		`SELECT total_xp FROM users WHERE id = $1 FOR UPDATE`, p.UserID).Scan(&totalXP); err != nil {
-		return nil, fmt.Errorf("lock user xp: %w", err)
+	// Award XP + append the xp_event (gamification owns the user XP/level columns
+	// and the event log); the row lock it takes is held until this tx commits.
+	totalXP, level, err := r.xp.AwardXPTx(ctx, tx, p.UserID, p.XPReward, "checkin", cp.ID)
+	if err != nil {
+		return nil, fmt.Errorf("award xp: %w", err)
 	}
-	totalXP += p.XPReward
-	level := levelForXP(totalXP)
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE users SET total_xp = $2, level = $3,
-		   checkpoint_count = checkpoint_count + 1, updated_at = NOW()
+		`UPDATE users SET checkpoint_count = checkpoint_count + 1, updated_at = NOW()
 		 WHERE id = $1`,
-		p.UserID, totalXP, level); err != nil {
-		return nil, fmt.Errorf("award xp: %w", err)
+		p.UserID); err != nil {
+		return nil, fmt.Errorf("bump checkpoint_count: %w", err)
+	}
+
+	// Evaluate achievements now that counts/province are up to date.
+	newBadges, err := r.xp.EvaluateBadgesTx(ctx, tx, p.UserID)
+	if err != nil {
+		return nil, fmt.Errorf("evaluate badges: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
-	return &CreateResult{Checkpoint: cp, XPAwarded: p.XPReward, TotalXP: totalXP, Level: level}, nil
+	return &CreateResult{
+		Checkpoint: cp, XPAwarded: p.XPReward, TotalXP: totalXP, Level: level, NewBadges: newBadges,
+	}, nil
 }
 
 // GetByID returns a checkpoint by id.
