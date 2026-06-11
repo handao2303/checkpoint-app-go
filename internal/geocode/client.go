@@ -149,9 +149,46 @@ func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 		return result{}, fmt.Errorf("decode reverse geocode response: %w", err)
 	}
 
+	province := firstNonEmpty(payload.Address.State, payload.Address.City, payload.Address.County)
+
+	parts := strings.Split(payload.DisplayName, ",")
+
+	// Trim khoảng trắng thừa cho từng phần tử trong mảng
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+
+	// 2. Tìm index của province trong mảng
+	provinceIdx := -1
+	for i, part := range parts {
+		if part == province {
+			provinceIdx = i
+			break
+		}
+	}
+
+	displayName := payload.DisplayName
+
+	// 3. Nếu tìm thấy province, tiến hành bóc tách theo quy luật
+	if provinceIdx != -1 {
+		startIdx := provinceIdx - 1
+		endIdx := provinceIdx + 1
+
+		// Ràng buộc boundary để tránh panics lỗi out of range index
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if endIdx >= len(parts) {
+			endIdx = len(parts) - 1
+		}
+
+		// Cắt mảng từ [province - 1] đến [province + 1] và gộp lại bằng ", "
+		displayName = strings.Join(parts[startIdx:endIdx+1], ", ")
+	}
+
 	r := result{
-		displayName: strings.TrimSpace(payload.DisplayName),
-		province:    firstNonEmpty(payload.Address.State, payload.Address.City, payload.Address.County),
+		displayName: displayName,
+		province:    province,
 	}
 
 	c.cacheMu.Lock()
