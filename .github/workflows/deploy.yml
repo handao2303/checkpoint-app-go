@@ -29,7 +29,7 @@ jobs:
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message: "🚀 *[Backend]* Deploy bắt đầu — `${{ github.ref_name }}` (${{ github.sha }})"
+          message: "🚀 <b>[Backend]</b> Deploy bắt đầu — <code>${{ github.ref_name }}</code> (${{ github.sha }})"
 
   test:
     name: Test
@@ -58,7 +58,7 @@ jobs:
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Test: ${{ job.status == 'success' && 'passed' || 'failed' }}"
+          message: "${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Test: ${{ job.status == 'success' && 'passed' || 'failed' }}"
 
   migrate:
     name: Migrate database
@@ -98,7 +98,7 @@ jobs:
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Migrate: ${{ job.status == 'success' && 'passed' || 'failed' }}"
+          message: "${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Migrate: ${{ job.status == 'success' && 'passed' || 'failed' }}"
 
   deploy:
     name: Deploy to Cloud Run
@@ -264,7 +264,7 @@ jobs:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
-            ${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}
+            ${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}
             ${{ job.status == 'success' && format(' → {0}', steps.service.outputs.url) || '' }}
 
   health-check:
@@ -287,4 +287,4 @@ jobs:
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Health-check: ${{ job.status == 'success' && 'passed' || 'failed' }}"
+          message: "${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Health-check: ${{ job.status == 'success' && 'passed' || 'failed' }}"
