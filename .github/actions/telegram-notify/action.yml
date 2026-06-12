@@ -1,0 +1,23 @@
+name: "Telegram Notify"
+description: "Send a message to a Telegram chat via bot token."
+
+inputs:
+  message:
+    description: "Message text (MarkdownV2 supported)"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Send Telegram message
+      shell: bash
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+          -d chat_id="${TELEGRAM_CHAT_ID}" \
+          -d parse_mode="MarkdownV2" \
+          -d text="${{ inputs.message }}" \
+          -d disable_web_page_preview=true \
+          > /dev/null
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

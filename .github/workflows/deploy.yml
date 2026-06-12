@@ -19,8 +19,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── Notify start ──────────────────────────────────────────────
+  notify-start:
+    name: Notify start
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/telegram-notify
+        with:
+          message: "🚀 *[Backend]* Deploy bắt đầu — \`${{ github.ref_name }}\` (${{ github.sha }})"
+
   test:
     name: Test
+    needs: notify-start
     runs-on: ubuntu-latest
 
     steps:
@@ -39,9 +50,15 @@ jobs:
       - name: Test
         run: go test -race -shuffle=on ./...
 
+      - name: Notify test result
+        if: always()
+        uses: ./.github/actions/telegram-notify
+        with:
+          message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Test: ${{ job.status == 'success' && 'passed' || 'failed' }}"
+
   migrate:
     name: Migrate database
-    needs: test
+    needs: [notify-start, test]
     if: github.event_name == 'push' || inputs.run_migrations
     runs-on: ubuntu-latest
     env:
@@ -71,9 +88,15 @@ jobs:
       - name: Run migrations
         run: migrate -path migrations -database "$DATABASE_URL" up
 
+      - name: Notify migrate result
+        if: always()
+        uses: ./.github/actions/telegram-notify
+        with:
+          message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Migrate: ${{ job.status == 'success' && 'passed' || 'failed' }}"
+
   deploy:
     name: Deploy to Cloud Run
-    needs: [test, migrate]
+    needs: [notify-start, test, migrate]
     if: always() && needs.test.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
@@ -228,6 +251,14 @@ jobs:
         if: always()
         run: rm -f "$RUNNER_TEMP/runtime-env.json"
 
+      - name: Notify deploy result
+        if: always()
+        uses: ./.github/actions/telegram-notify
+        with:
+          message: |
+            ${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}
+            ${{ job.status == 'success' && format(' → {0}', steps.service.outputs.url) || '' }}
+
   health-check:
     name: Health check
     needs: deploy
@@ -235,7 +266,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Check Cloud Run health endpoint
         env:
           SERVICE_URL: ${{ needs.deploy.outputs.service_url }}
         run: curl --fail --show-error --silent --retry 5 --retry-delay 5 --retry-all-errors "$SERVICE_URL/health"
+
+      - name: Notify health-check result
+        if: always()
+        uses: ./.github/actions/telegram-notify
+        with:
+          message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Health-check: ${{ job.status == 'success' && 'passed' || 'failed' }}"
