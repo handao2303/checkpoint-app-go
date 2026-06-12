@@ -5,6 +5,12 @@ inputs:
   message:
     description: "Message text (MarkdownV2 supported)"
     required: true
+  bot_token:
+    description: "Telegram Bot Token"
+    required: true
+  chat_id:
+    description: "Telegram Chat ID"
+    required: true
 
 runs:
   using: composite
@@ -19,5 +25,5 @@ runs:
           -d disable_web_page_preview=true \
           > /dev/null
       env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        TELEGRAM_BOT_TOKEN: ${{ inputs.bot_token }}
+        TELEGRAM_CHAT_ID: ${{ inputs.chat_id }}

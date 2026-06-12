@@ -24,9 +24,11 @@ jobs:
     name: Notify start
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: ./.github/actions/telegram-notify
         with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: "🚀 *[Backend]* Deploy bắt đầu — `${{ github.ref_name }}` (${{ github.sha }})"
 
   test:
@@ -54,6 +56,8 @@ jobs:
         if: always()
         uses: ./.github/actions/telegram-notify
         with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Test: ${{ job.status == 'success' && 'passed' || 'failed' }}"
 
   migrate:
@@ -92,6 +96,8 @@ jobs:
         if: always()
         uses: ./.github/actions/telegram-notify
         with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Migrate: ${{ job.status == 'success' && 'passed' || 'failed' }}"
 
   deploy:
@@ -255,6 +261,8 @@ jobs:
         if: always()
         uses: ./.github/actions/telegram-notify
         with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: |
             ${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}
             ${{ job.status == 'success' && format(' → {0}', steps.service.outputs.url) || '' }}
@@ -277,4 +285,6 @@ jobs:
         if: always()
         uses: ./.github/actions/telegram-notify
         with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
           message: "${{ job.status == 'success' && '✅' || '❌' }} *[Backend]* Health-check: ${{ job.status == 'success' && 'passed' || 'failed' }}"
