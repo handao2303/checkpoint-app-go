@@ -47,6 +47,7 @@ type createRequest struct {
 	Lat       float64 `json:"lat"`
 	Lng       float64 `json:"lng"`
 	Address   *string `json:"address"`
+	Province  *string `json:"province"`
 	PlaceID   *string `json:"place_id"`
 	JourneyID *string `json:"journey_id"`
 }

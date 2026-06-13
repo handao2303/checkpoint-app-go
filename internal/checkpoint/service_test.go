@@ -61,25 +61,9 @@ func (f *fakeStorage) Delete(_ context.Context, key string) error {
 func ratingPtr(v int16) *int16   { return &v }
 func stringPtr(v string) *string { return &v }
 
-type fakeGeocoder struct {
-	calls    int
-	address  string
-	province string
-	err      error
-}
-
-func (f *fakeGeocoder) Reverse(context.Context, float64, float64) (string, error) {
-	f.calls++
-	return f.address, f.err
-}
-
-func (f *fakeGeocoder) Province(context.Context, float64, float64) (string, error) {
-	return f.province, f.err
-}
-
 func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	repo := &fakeRepo{}
-	svc := NewService(repo, nil, nil, nil)
+	svc := NewService(repo, nil, nil)
 
 	res, err := svc.Create(context.Background(), "user1", Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6})
 	if err != nil {
@@ -96,60 +80,39 @@ func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	}
 }
 
-func TestServiceCreate_ResolvesAddress(t *testing.T) {
+func TestServiceCreate_StoresClientAddress(t *testing.T) {
 	repo := &fakeRepo{}
-	geocoder := &fakeGeocoder{address: "123 Đường Nguyễn Huệ, Quận 1"}
+	addr := "  Phường Bến Nghé, Quận 1  "
+	prov := "Thành phố Hồ Chí Minh"
 
-	if _, err := NewService(repo, nil, geocoder, nil).Create(
+	if _, err := NewService(repo, nil, nil).Create(
 		context.Background(),
 		"user1",
-		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6},
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: &addr, Province: &prov},
 	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if geocoder.calls != 1 {
-		t.Fatalf("geocoder calls = %d, want 1", geocoder.calls)
+	if repo.lastCreate.Address == nil || *repo.lastCreate.Address != "Phường Bến Nghé, Quận 1" {
+		t.Fatalf("Address = %v, want trimmed value", repo.lastCreate.Address)
 	}
-	if repo.lastCreate.Address == nil || *repo.lastCreate.Address != geocoder.address {
-		t.Fatalf("Address = %v, want %q", repo.lastCreate.Address, geocoder.address)
+	if repo.lastCreate.Province == nil || *repo.lastCreate.Province != prov {
+		t.Fatalf("Province = %v, want %q", repo.lastCreate.Province, prov)
 	}
 }
 
-func TestServiceCreate_KeepsExplicitAddress(t *testing.T) {
+func TestServiceCreate_HandlesBlankAddress(t *testing.T) {
 	repo := &fakeRepo{}
-	geocoder := &fakeGeocoder{address: "resolved address"}
-
-	if _, err := NewService(repo, nil, geocoder, nil).Create(
+	blank := "   "
+	if _, err := NewService(repo, nil, nil).Create(
 		context.Background(),
 		"user1",
-		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: stringPtr("  custom address  ")},
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: &blank},
 	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	if geocoder.calls != 0 {
-		t.Fatalf("geocoder calls = %d, want 0", geocoder.calls)
-	}
-	if repo.lastCreate.Address == nil || *repo.lastCreate.Address != "custom address" {
-		t.Fatalf("Address = %v, want %q", repo.lastCreate.Address, "custom address")
-	}
-}
-
-func TestServiceCreate_GeocoderFailureIsNonFatal(t *testing.T) {
-	repo := &fakeRepo{}
-	geocoder := &fakeGeocoder{err: errors.New("provider unavailable")}
-
-	if _, err := NewService(repo, nil, geocoder, nil).Create(
-		context.Background(),
-		"user1",
-		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6},
-	); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
 	if repo.lastCreate.Address != nil {
-		t.Fatalf("Address = %q, want nil", *repo.lastCreate.Address)
+		t.Fatalf("Address = %q, want nil for blank input", *repo.lastCreate.Address)
 	}
 }
 
@@ -166,13 +129,9 @@ func TestServiceCreate_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := &fakeRepo{}
-			geocoder := &fakeGeocoder{address: "resolved address"}
-			_, err := NewService(repo, nil, geocoder, nil).Create(context.Background(), "u", tt.in)
+			_, err := NewService(repo, nil, nil).Create(context.Background(), "u", tt.in)
 			if !errors.Is(err, ErrInvalidInput) {
 				t.Errorf("expected ErrInvalidInput, got %v", err)
-			}
-			if geocoder.calls != 0 {
-				t.Errorf("geocoder calls = %d, want 0", geocoder.calls)
 			}
 			if repo.lastCreate != nil {
 				t.Error("repo.Create should not be called on invalid input")
@@ -184,7 +143,7 @@ func TestServiceCreate_Validation(t *testing.T) {
 func TestServiceCreate_ForwardsPlaceID(t *testing.T) {
 	repo := &fakeRepo{}
 	pid := "place-123"
-	_, err := NewService(repo, nil, nil, nil).Create(
+	_, err := NewService(repo, nil, nil).Create(
 		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, PlaceID: &pid})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -203,7 +162,7 @@ func (f *fakeJourneys) BelongsToUser(context.Context, string, string) (bool, err
 func TestServiceCreate_AttachesOwnedJourney(t *testing.T) {
 	repo := &fakeRepo{}
 	jid := "journey-1"
-	_, err := NewService(repo, nil, nil, &fakeJourneys{owns: true}).Create(
+	_, err := NewService(repo, nil, &fakeJourneys{owns: true}).Create(
 		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -216,7 +175,7 @@ func TestServiceCreate_AttachesOwnedJourney(t *testing.T) {
 func TestServiceCreate_RejectsForeignJourney(t *testing.T) {
 	repo := &fakeRepo{}
 	jid := "someone-elses-journey"
-	_, err := NewService(repo, nil, nil, &fakeJourneys{owns: false}).Create(
+	_, err := NewService(repo, nil, &fakeJourneys{owns: false}).Create(
 		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -233,7 +192,7 @@ func TestServiceDelete_CleansUpStorage(t *testing.T) {
 		"checkpoints/cp1/b.jpg",
 	}}
 	storage := &fakeStorage{}
-	svc := NewService(repo, storage, nil, nil)
+	svc := NewService(repo, storage, nil)
 
 	if err := svc.Delete(context.Background(), "cp1", "user1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -248,7 +207,7 @@ func TestServiceDelete_CleansUpStorage(t *testing.T) {
 func TestServiceDelete_NotFoundPropagates(t *testing.T) {
 	repo := &fakeRepo{deleteErr: ErrNotFound}
 	storage := &fakeStorage{}
-	svc := NewService(repo, storage, nil, nil)
+	svc := NewService(repo, storage, nil)
 
 	if err := svc.Delete(context.Background(), "cp1", "user1"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)

@@ -49,11 +49,6 @@ type fileStorage interface {
 	Delete(ctx context.Context, key string) error
 }
 
-type reverseGeocoder interface {
-	Reverse(ctx context.Context, lat, lng float64) (string, error)
-	Province(ctx context.Context, lat, lng float64) (string, error)
-}
-
 // journeyValidator checks that a chosen journey belongs to the user, so a
 // check-in can only be attached to one of the user's own journeys.
 type journeyValidator interface {
@@ -64,13 +59,12 @@ type journeyValidator interface {
 type Service struct {
 	repo     repository
 	storage  fileStorage
-	geocoder reverseGeocoder
 	journeys journeyValidator
 }
 
 // NewService builds the checkpoint service.
-func NewService(repo repository, storage fileStorage, geocoder reverseGeocoder, journeys journeyValidator) *Service {
-	return &Service{repo: repo, storage: storage, geocoder: geocoder, journeys: journeys}
+func NewService(repo repository, storage fileStorage, journeys journeyValidator) *Service {
+	return &Service{repo: repo, storage: storage, journeys: journeys}
 }
 
 // Input is the user-supplied data for a check-in (before validation).
@@ -82,6 +76,7 @@ type Input struct {
 	Lat       float64
 	Lng       float64
 	Address   *string
+	Province  *string
 	PlaceID   *string
 	JourneyID *string
 }
@@ -113,6 +108,8 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		}
 	}
 
+	// Address and province are resolved by the client (lib/photon.ts) before
+	// submit, so the server just sanitizes and stores what it receives.
 	address := in.Address
 	if address != nil {
 		trimmed := strings.TrimSpace(*address)
@@ -122,21 +119,11 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 			address = &trimmed
 		}
 	}
-	if address == nil && s.geocoder != nil {
-		if resolved, err := s.geocoder.Reverse(ctx, in.Lat, in.Lng); err == nil {
-			if resolved = strings.TrimSpace(resolved); resolved != "" {
-				address = &resolved
-			}
-		}
-	}
 
-	// Province powers the digital passport (provinces visited). Best-effort.
 	var province *string
-	if s.geocoder != nil {
-		if p, err := s.geocoder.Province(ctx, in.Lat, in.Lng); err == nil {
-			if p = strings.TrimSpace(p); p != "" {
-				province = &p
-			}
+	if in.Province != nil {
+		if p := strings.TrimSpace(*in.Province); p != "" {
+			province = &p
 		}
 	}
 

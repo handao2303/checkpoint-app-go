@@ -22,7 +22,6 @@ import (
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/gamification"
-	"github.com/quanluon/checkpoint-app/internal/geocode"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
 	"github.com/quanluon/checkpoint-app/internal/place"
@@ -74,7 +73,6 @@ func run() error {
 	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL), tokens, verifier, r2)
 	identityHandler := identity.NewHandler(identitySvc)
 
-	geocoder := geocode.NewClient(cfg.geocoder)
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
 	gamificationRepo := gamification.NewRepository(pool, cfg.r2.PublicURL)
 	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo))
@@ -82,7 +80,7 @@ func run() error {
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
 	checkpointHandler := checkpoint.NewHandler(
-		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo), r2, geocoder, journeyRepo))
+		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo), r2, journeyRepo))
 
 	corsOpts := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -174,7 +172,6 @@ type config struct {
 	accessTTL   time.Duration
 	refreshTTL  time.Duration
 	r2          storage.R2Config
-	geocoder    geocode.Config
 	rateLimit   appmw.RateLimitConfig
 }
 
@@ -193,11 +190,6 @@ func loadConfig() (config, error) {
 			SecretKey: os.Getenv("R2_ACCESS_KEY_SECRET"),
 			Bucket:    os.Getenv("R2_BUCKET_NAME"),
 			PublicURL: os.Getenv("R2_PUBLIC_URL"),
-		},
-		geocoder: geocode.Config{
-			Enabled:   boolEnv("GEOCODER_ENABLED", true),
-			BaseURL:   getEnv("GEOCODER_BASE_URL", ""), // empty → Photon default
-			UserAgent: getEnv("GEOCODER_USER_AGENT", "checkpoint-app/0.1"),
 		},
 		rateLimit: appmw.RateLimitConfig{
 			Enabled: boolEnv("RATE_LIMIT_ENABLED", true),
