@@ -71,6 +71,10 @@ func (f *fakeStorage) Delete(_ context.Context, key string) error {
 	return nil
 }
 
+func (f *fakeStorage) PresignUpload(key string, _ int) string {
+	return "https://r2.example.com/" + key + "?presigned=1"
+}
+
 func ratingPtr(v int16) *int16   { return &v }
 func stringPtr(v string) *string { return &v }
 
