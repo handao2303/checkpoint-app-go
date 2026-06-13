@@ -54,10 +54,10 @@ type reverseGeocoder interface {
 	Province(ctx context.Context, lat, lng float64) (string, error)
 }
 
-// activeJourneyReader returns the user's active journey id (or nil), so a
-// check-in made while travelling is attached to it.
-type activeJourneyReader interface {
-	ActiveJourneyID(ctx context.Context, userID string) (*string, error)
+// journeyValidator checks that a chosen journey belongs to the user, so a
+// check-in can only be attached to one of the user's own journeys.
+type journeyValidator interface {
+	BelongsToUser(ctx context.Context, userID, journeyID string) (bool, error)
 }
 
 // Service holds the checkpoint business logic.
@@ -65,11 +65,11 @@ type Service struct {
 	repo     repository
 	storage  fileStorage
 	geocoder reverseGeocoder
-	journeys activeJourneyReader
+	journeys journeyValidator
 }
 
 // NewService builds the checkpoint service.
-func NewService(repo repository, storage fileStorage, geocoder reverseGeocoder, journeys activeJourneyReader) *Service {
+func NewService(repo repository, storage fileStorage, geocoder reverseGeocoder, journeys journeyValidator) *Service {
 	return &Service{repo: repo, storage: storage, geocoder: geocoder, journeys: journeys}
 }
 
@@ -103,11 +103,13 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		category = "other"
 	}
 
-	// Attach to a journey: explicit one, else the user's active journey (if any).
+	// Attach to the journey the user picked (the client chooses one of their
+	// active journeys). Validate ownership so a check-in can't be slipped into
+	// someone else's journey; if it isn't theirs, just leave it unattached.
 	journeyID := in.JourneyID
-	if journeyID == nil && s.journeys != nil {
-		if active, err := s.journeys.ActiveJourneyID(ctx, userID); err == nil {
-			journeyID = active
+	if journeyID != nil && s.journeys != nil {
+		if ok, err := s.journeys.BelongsToUser(ctx, userID, *journeyID); err != nil || !ok {
+			journeyID = nil
 		}
 	}
 

@@ -106,39 +106,22 @@ func (r *Repository) Update(ctx context.Context, id, userID string, title, descr
 		 RETURNING `+journeyColumns, id, userID, title, description), "update journey")
 }
 
-// SetActive activates (deactivating any other active journey first, to respect
-// the one-active unique index) or ends a journey.
-func (r *Repository) SetActive(ctx context.Context, id, userID string, active bool) (j *Journey, err error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
+// SetActive activates or ends a journey. Multiple journeys can be active at once
+// (a check-in then picks which one to record under), so this no longer clears
+// other active journeys.
+func (r *Repository) SetActive(ctx context.Context, id, userID string, active bool) (*Journey, error) {
+	var query string
 	if active {
-		if _, err := tx.Exec(ctx,
-			`UPDATE journeys SET is_active = false, updated_at = NOW()
-			 WHERE user_id = $1 AND is_active AND deleted_at IS NULL`, userID); err != nil {
-			return nil, fmt.Errorf("clear active journey: %w", err)
-		}
-		j, err = getJourney(tx.QueryRow(ctx,
-			`UPDATE journeys SET is_active = true, ended_at = NULL,
-			   started_at = COALESCE(started_at, NOW()), updated_at = NOW()
-			 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-			 RETURNING `+journeyColumns, id, userID), "activate journey")
+		query = `UPDATE journeys SET is_active = true, ended_at = NULL,
+		           started_at = COALESCE(started_at, NOW()), updated_at = NOW()
+		         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		         RETURNING ` + journeyColumns
 	} else {
-		j, err = getJourney(tx.QueryRow(ctx,
-			`UPDATE journeys SET is_active = false, ended_at = NOW(), updated_at = NOW()
-			 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-			 RETURNING `+journeyColumns, id, userID), "deactivate journey")
+		query = `UPDATE journeys SET is_active = false, ended_at = NOW(), updated_at = NOW()
+		         WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		         RETURNING ` + journeyColumns
 	}
-	if err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit set active: %w", err)
-	}
-	return j, nil
+	return getJourney(r.db.QueryRow(ctx, query, id, userID), "set journey active")
 }
 
 // Delete soft-deletes an owned journey, detaches its check-ins, and decrements
@@ -173,18 +156,20 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (err error) 
 	return nil
 }
 
-// ActiveJourneyID returns the user's active journey id, or nil if none.
-func (r *Repository) ActiveJourneyID(ctx context.Context, userID string) (*string, error) {
-	var id string
+// BelongsToUser reports whether the journey exists and is owned by userID — used
+// to validate a check-in's chosen journey_id before attaching it.
+func (r *Repository) BelongsToUser(ctx context.Context, userID, journeyID string) (bool, error) {
+	var ok bool
 	err := r.db.QueryRow(ctx,
-		`SELECT id FROM journeys WHERE user_id = $1 AND is_active AND deleted_at IS NULL`, userID).Scan(&id)
+		`SELECT true FROM journeys WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+		journeyID, userID).Scan(&ok)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+		return false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("active journey: %w", err)
+		return false, fmt.Errorf("check journey ownership: %w", err)
 	}
-	return &id, nil
+	return ok, nil
 }
 
 // AssignCheckpoint attaches a checkpoint to a journey, both owned by userID.

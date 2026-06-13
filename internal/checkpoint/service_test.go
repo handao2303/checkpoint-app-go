@@ -194,20 +194,35 @@ func TestServiceCreate_ForwardsPlaceID(t *testing.T) {
 	}
 }
 
-type fakeJourneys struct{ id *string }
+type fakeJourneys struct{ owns bool }
 
-func (f *fakeJourneys) ActiveJourneyID(context.Context, string) (*string, error) { return f.id, nil }
+func (f *fakeJourneys) BelongsToUser(context.Context, string, string) (bool, error) {
+	return f.owns, nil
+}
 
-func TestServiceCreate_UsesActiveJourney(t *testing.T) {
+func TestServiceCreate_AttachesOwnedJourney(t *testing.T) {
 	repo := &fakeRepo{}
 	jid := "journey-1"
-	_, err := NewService(repo, nil, nil, &fakeJourneys{id: &jid}).Create(
-		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106})
+	_, err := NewService(repo, nil, nil, &fakeJourneys{owns: true}).Create(
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if repo.lastCreate.JourneyID == nil || *repo.lastCreate.JourneyID != jid {
 		t.Errorf("JourneyID = %v, want %q", repo.lastCreate.JourneyID, jid)
+	}
+}
+
+func TestServiceCreate_RejectsForeignJourney(t *testing.T) {
+	repo := &fakeRepo{}
+	jid := "someone-elses-journey"
+	_, err := NewService(repo, nil, nil, &fakeJourneys{owns: false}).Create(
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.lastCreate.JourneyID != nil {
+		t.Errorf("JourneyID = %v, want nil (not the user's journey)", repo.lastCreate.JourneyID)
 	}
 }
 
