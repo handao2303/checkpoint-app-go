@@ -196,8 +196,8 @@ func loadConfig() (config, error) {
 		},
 		geocoder: geocode.Config{
 			Enabled:   boolEnv("GEOCODER_ENABLED", true),
-			BaseURL:   getEnv("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org"),
-			UserAgent: getEnv("NOMINATIM_USER_AGENT", "checkpoint-app/0.1"),
+			BaseURL:   getEnv("GEOCODER_BASE_URL", ""), // empty → Photon default
+			UserAgent: getEnv("GEOCODER_USER_AGENT", "checkpoint-app/0.1"),
 		},
 		rateLimit: appmw.RateLimitConfig{
 			Enabled: boolEnv("RATE_LIMIT_ENABLED", true),

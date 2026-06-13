@@ -1,13 +1,15 @@
-// Package geocode resolves geographic coordinates into human-readable addresses.
+// Package geocode resolves geographic coordinates into human-readable addresses
+// via Photon (https://photon.komoot.io) — an OSM-based geocoder that's much
+// faster than the public Nominatim instance (~200-500ms, no hard 1/s limit).
 package geocode
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,12 +17,12 @@ import (
 )
 
 const (
-	defaultBaseURL  = "https://nominatim.openstreetmap.org"
+	defaultBaseURL  = "https://photon.komoot.io"
 	defaultTimeout  = 5 * time.Second
-	defaultInterval = time.Second
+	defaultInterval = 0 // Photon has no hard rate limit; cache + low traffic suffice.
 )
 
-// Config controls the Nominatim reverse-geocoding client.
+// Config controls the reverse-geocoding client.
 type Config struct {
 	Enabled      bool
 	BaseURL      string
@@ -29,7 +31,7 @@ type Config struct {
 	RateInterval time.Duration
 }
 
-// Client is a cached, rate-limited Nominatim reverse-geocoding client.
+// Client is a cached reverse-geocoding client over Photon.
 type Client struct {
 	enabled      bool
 	baseURL      string
@@ -61,7 +63,7 @@ func NewClient(cfg Config) *Client {
 		timeout = defaultTimeout
 	}
 	interval := cfg.RateInterval
-	if interval <= 0 {
+	if interval < 0 {
 		interval = defaultInterval
 	}
 
@@ -75,22 +77,21 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// Reverse returns Nominatim's display_name for the given coordinates.
+// Reverse returns a concise address for the given coordinates.
 func (c *Client) Reverse(ctx context.Context, lat, lng float64) (string, error) {
 	r, err := c.lookup(ctx, lat, lng)
 	return r.displayName, err
 }
 
 // Province returns the province/state name for the given coordinates (Vietnam
-// provinces map to Nominatim's `state`, with city/county as fallbacks). Empty
-// when unknown or the geocoder is disabled.
+// provinces map to Photon's `state`, with county/city as fallbacks). Empty when
+// unknown or the geocoder is disabled.
 func (c *Client) Province(ctx context.Context, lat, lng float64) (string, error) {
 	r, err := c.lookup(ctx, lat, lng)
 	return r.province, err
 }
 
-// lookup performs (and caches) a single reverse-geocode for a coordinate,
-// extracting both the display name and the province.
+// lookup performs (and caches) a single reverse-geocode for a coordinate.
 func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 	if !c.enabled {
 		return result{}, nil
@@ -113,12 +114,8 @@ func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 		return result{}, fmt.Errorf("parse geocoder URL: %w", err)
 	}
 	query := endpoint.Query()
-	query.Set("format", "jsonv2")
 	query.Set("lat", strconv.FormatFloat(lat, 'f', 6, 64))
 	query.Set("lon", strconv.FormatFloat(lng, 'f', 6, 64))
-	query.Set("zoom", "18")
-	query.Set("addressdetails", "1")
-	query.Set("layer", "address")
 	endpoint.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
@@ -138,23 +135,9 @@ func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 		return result{}, fmt.Errorf("reverse geocode status: %s", res.Status)
 	}
 
-	var payload struct {
-		DisplayName string `json:"display_name"`
-		Address     struct {
-			State  string `json:"state"`
-			City   string `json:"city"`
-			County string `json:"county"`
-		} `json:"address"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
-		return result{}, fmt.Errorf("decode reverse geocode response: %w", err)
-	}
-
-	province := firstNonEmpty(payload.Address.State, payload.Address.City, payload.Address.County)
-
-	r := result{
-		displayName: getDisplayName(payload.DisplayName, province),
-		province:    province,
+	r, err := parsePhoton(res.Body)
+	if err != nil {
+		return result{}, err
 	}
 
 	c.cacheMu.Lock()
@@ -163,28 +146,53 @@ func (c *Client) lookup(ctx context.Context, lat, lng float64) (result, error) {
 	return r, nil
 }
 
-func getDisplayName(full, province string) string {
-	displayName := full
-	parts := strings.Split(full, ",")
-
-	// 1. Tìm index của province trực tiếp bằng cách so sánh chuỗi đã trim
-	provinceIdx := slices.IndexFunc(parts, func(s string) bool {
-		return strings.TrimSpace(s) == province
-	})
-
-	// 2. Nếu tìm thấy, cắt mảng và dọn dẹp khoảng trắng 1 lượt bằng strings.Join
-	if provinceIdx != -1 {
-		start := max(0, provinceIdx-1)
-		end := min(len(parts)-1, provinceIdx+1)
-
-		// Gom các phần tử cần thiết
-		subParts := parts[start : end+1]
-		for i := range subParts {
-			subParts[i] = strings.TrimSpace(subParts[i])
-		}
-		displayName = strings.Join(subParts, ", ")
+// parsePhoton extracts a concise admin address + province from a Photon GeoJSON
+// reverse response. A malformed body is an error; an empty feature list is a
+// valid "no result" (empty address).
+func parsePhoton(body io.Reader) (result, error) {
+	var payload struct {
+		Features []struct {
+			Properties struct {
+				Name     string `json:"name"`
+				Street   string `json:"street"`
+				District string `json:"district"`
+				Locality string `json:"locality"`
+				City     string `json:"city"`
+				County   string `json:"county"`
+				State    string `json:"state"`
+			} `json:"properties"`
+		} `json:"features"`
 	}
-	return displayName
+	if err := json.NewDecoder(body).Decode(&payload); err != nil {
+		return result{}, fmt.Errorf("decode reverse geocode response: %w", err)
+	}
+	if len(payload.Features) == 0 {
+		return result{}, nil
+	}
+	p := payload.Features[0].Properties
+
+	province := firstNonEmpty(p.State, p.County, p.City)
+	// Concise admin address (ward → district → province), deduped.
+	display := joinUnique(p.District, p.Locality, p.City, p.County, p.State)
+	if display == "" {
+		display = joinUnique(p.Name, p.Street)
+	}
+	return result{displayName: display, province: province}, nil
+}
+
+// joinUnique trims, drops empties + exact duplicates, and joins with ", ".
+func joinUnique(vals ...string) string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range vals {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return strings.Join(out, ", ")
 }
 
 // firstNonEmpty returns the first trimmed non-empty string.
@@ -198,6 +206,9 @@ func firstNonEmpty(vals ...string) string {
 }
 
 func (c *Client) waitForRateLimit(ctx context.Context) error {
+	if c.rateInterval <= 0 {
+		return nil
+	}
 	c.rateMu.Lock()
 	defer c.rateMu.Unlock()
 

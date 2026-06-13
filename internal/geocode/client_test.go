@@ -18,18 +18,16 @@ func TestClientReverse_ParsesAddressAndCaches(t *testing.T) {
 		}
 		query := r.URL.Query()
 		for key, want := range map[string]string{
-			"format":         "jsonv2",
-			"lat":            "10.800000",
-			"lon":            "106.600000",
-			"zoom":           "18",
-			"addressdetails": "1",
-			"layer":          "address",
+			"lat": "10.800000",
+			"lon": "106.600000",
 		} {
 			if got := query.Get(key); got != want {
 				t.Errorf("%s = %q, want %q", key, got, want)
 			}
 		}
-		_, _ = w.Write([]byte(`{"display_name":"123 Nguyen Hue, District 1"}`))
+		// Photon GeoJSON reverse response.
+		_, _ = w.Write([]byte(`{"features":[{"properties":{` +
+			`"district":"Phường Bến Nghé","city":"Quận 1","state":"Thành phố Hồ Chí Minh"}}]}`))
 	}))
 	defer server.Close()
 
@@ -40,17 +38,23 @@ func TestClientReverse_ParsesAddressAndCaches(t *testing.T) {
 		RateInterval: time.Nanosecond,
 	})
 
+	const wantAddr = "Phường Bến Nghé, Quận 1, Thành phố Hồ Chí Minh"
 	for range 2 {
 		address, err := client.Reverse(context.Background(), 10.8, 106.6)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if address != "123 Nguyen Hue, District 1" {
-			t.Fatalf("address = %q", address)
+		if address != wantAddr {
+			t.Fatalf("address = %q, want %q", address, wantAddr)
 		}
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("requests = %d, want 1", got)
+	}
+
+	province, err := client.Province(context.Background(), 10.8, 106.6)
+	if err != nil || province != "Thành phố Hồ Chí Minh" {
+		t.Fatalf("Province() = %q, %v", province, err)
 	}
 }
 

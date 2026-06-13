@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 )
 
 // Service errors.
@@ -211,18 +213,34 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 		return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
 	}
 
-	keys := make([]string, 0, len(uploads))
-	for _, u := range uploads {
+	// Validate all content types up front (fail fast, before any upload).
+	exts := make([]string, len(uploads))
+	for i, u := range uploads {
 		ext := imageExt(u.ContentType)
 		if ext == "" {
 			return nil, ErrUnsupportedFile
 		}
-		key := fmt.Sprintf("checkpoints/%s/%s%s", checkpointID, randHex(8), ext)
-		storedKey, err := s.storage.Upload(ctx, key, u.ContentType, u.Body)
-		if err != nil {
-			return nil, fmt.Errorf("upload image: %w", err)
-		}
-		keys = append(keys, storedKey)
+		exts[i] = ext
+	}
+
+	// Upload to R2 in parallel — independent objects, so 3 photos take ~1 round
+	// trip instead of 3. Order is preserved via the indexed keys slice.
+	keys := make([]string, len(uploads))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxImages)
+	for i := range uploads {
+		g.Go(func() error {
+			key := fmt.Sprintf("checkpoints/%s/%s%s", checkpointID, randHex(8), exts[i])
+			storedKey, err := s.storage.Upload(gctx, key, uploads[i].ContentType, uploads[i].Body)
+			if err != nil {
+				return fmt.Errorf("upload image: %w", err)
+			}
+			keys[i] = storedKey
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return s.repo.AddImages(ctx, checkpointID, keys, existing)
 }
