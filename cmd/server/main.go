@@ -107,14 +107,26 @@ func run() error {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(corsOpts))
 	r.Use(chimw.RequestID, chimw.Logger, chimw.Recoverer)
-	var ipLimiterOpts, userLimiterOpts []appmw.RateLimiterOption
+	var ipLimiterOpts, userLimiterOpts, checkinLimiterOpts []appmw.RateLimiterOption
 	if redisClient != nil {
 		store := appmw.NewRedisRateLimitStore(redisClient, cfg.rateLimit)
 		ipLimiterOpts = append(ipLimiterOpts, appmw.WithRateLimitStore(store, "checkpoint:rate-limit:ip:"))
 		userLimiterOpts = append(userLimiterOpts, appmw.WithRateLimitStore(store, "checkpoint:rate-limit:user:"))
+		checkinStore := appmw.NewRedisRateLimitStore(redisClient, appmw.RateLimitConfig{
+			Enabled:           cfg.rateLimit.Enabled,
+			RequestsPerMinute: 6,
+			Burst:             1,
+		})
+		checkinLimiterOpts = append(checkinLimiterOpts, appmw.WithRateLimitStore(checkinStore, "checkpoint:rate-limit:checkin:"))
 	}
 	ipLimiter := appmw.NewRateLimiter(cfg.rateLimit, ipLimiterOpts...)
 	userLimiter := appmw.NewRateLimiter(cfg.rateLimit, userLimiterOpts...)
+	// POST /checkpoints: 1 request per 10 s per user (6/min, burst=1).
+	checkinLimiter := appmw.NewRateLimiter(appmw.RateLimitConfig{
+		Enabled:           cfg.rateLimit.Enabled,
+		RequestsPerMinute: 6,
+		Burst:             1,
+	}, checkinLimiterOpts...)
 	r.Use(ipLimiter.ByIP)
 	r.Use(chimw.Timeout(30 * time.Second))
 
@@ -126,7 +138,7 @@ func run() error {
 		return auth(userLimiter.ByUser(next))
 	}
 	identityHandler.Register(r, authenticated)
-	checkpointHandler.Register(r, authenticated)
+	checkpointHandler.Register(r, authenticated, checkinLimiter.ByUser)
 	placeHandler.Register(r, authenticated)
 	journeyHandler.Register(r, authenticated)
 	gamificationHandler.Register(r, authenticated)

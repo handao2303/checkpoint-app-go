@@ -26,29 +26,30 @@ func NewRepository(db *pgxpool.Pool, mediaBase string) *Repository {
 }
 
 // AwardXPTx adds XP to a user within an existing transaction, recomputes their
-// level, and appends an xp_event — all under a SELECT ... FOR UPDATE row lock so
-// concurrent awards can't lose an increment. amount may be negative (a reversal,
-// e.g. deleting a check-in); the stored total never drops below zero. Returns
-// the new total and level.
+// level, and appends an xp_event. amount may be negative (a reversal, e.g.
+// deleting a check-in); the stored total never drops below zero. Returns the
+// new total and level.
+//
+// Level is derived from XP via the same formula as LevelForXP but expressed in
+// SQL so the whole thing is a single atomic UPDATE — no SELECT FOR UPDATE needed.
 //
 // It deliberately does NOT touch action-specific counters (e.g.
 // checkpoint_count); the caller owns those.
 func (r *Repository) AwardXPTx(
 	ctx context.Context, tx pgx.Tx, userID string, amount int, eventType, refID string,
 ) (totalXP, level int, err error) {
+	// One round-trip: atomically increment XP and derive level in SQL.
+	// Both SET expressions reference the OLD total_xp (PostgreSQL evaluates all
+	// right-hand sides before applying any update), so the computed values are
+	// consistent with each other.
 	if err = tx.QueryRow(ctx,
-		`SELECT total_xp FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&totalXP); err != nil {
-		return 0, 0, fmt.Errorf("lock user xp: %w", err)
-	}
-	totalXP += amount
-	if totalXP < 0 {
-		totalXP = 0
-	}
-	level = LevelForXP(totalXP)
-
-	if _, err = tx.Exec(ctx,
-		`UPDATE users SET total_xp = $2, level = $3, updated_at = NOW() WHERE id = $1`,
-		userID, totalXP, level); err != nil {
+		`UPDATE users
+		 SET total_xp   = GREATEST(total_xp + $2, 0),
+		     level      = LEAST(FLOOR(SQRT(GREATEST(total_xp + $2, 0) / 100.0))::int + 1, 50),
+		     updated_at = NOW()
+		 WHERE id = $1
+		 RETURNING total_xp, level`,
+		userID, amount).Scan(&totalXP, &level); err != nil {
 		return 0, 0, fmt.Errorf("update xp: %w", err)
 	}
 

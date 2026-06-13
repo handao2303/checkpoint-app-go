@@ -318,22 +318,7 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Owner check + grab what we need before the row is gone. FOR UPDATE blocks
-	// a concurrent double-delete of the same checkpoint.
-	var placeID *string
-	var xpAwarded int
-	err = tx.QueryRow(ctx,
-		`SELECT place_id, xp_awarded FROM checkpoints
-		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL FOR UPDATE`,
-		id, userID).Scan(&placeID, &xpAwarded)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("load checkpoint for delete: %w", err)
-	}
-
-	// Collect image keys so the caller can clean up R2 after commit.
+	// Collect image keys before the row (and its ON DELETE CASCADE) disappear.
 	rows, err := tx.Query(ctx,
 		`SELECT object_key, thumbnail_key FROM checkpoint_images WHERE checkpoint_id = $1`, id)
 	if err != nil {
@@ -356,13 +341,24 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 		return nil, fmt.Errorf("iterate image keys: %w", err)
 	}
 
-	// Hard delete; checkpoint_images rows go with it (ON DELETE CASCADE).
-	if _, err := tx.Exec(ctx, `DELETE FROM checkpoints WHERE id = $1`, id); err != nil {
+	// Atomically delete and return the side-effect values in one statement —
+	// no SELECT FOR UPDATE needed. A concurrent delete of the same row blocks
+	// on the implicit write lock until this tx commits, then sees 0 rows and
+	// gets ErrNotFound; double XP reversal is impossible.
+	var placeID *string
+	var xpAwarded int
+	err = tx.QueryRow(ctx,
+		`DELETE FROM checkpoints WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		 RETURNING place_id, xp_awarded`,
+		id, userID).Scan(&placeID, &xpAwarded)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
 		return nil, fmt.Errorf("delete checkpoint: %w", err)
 	}
 
-	// Reverse the XP award (locks the user row, recomputes level, logs a
-	// negative xp_event) and the checkpoint counter.
+	// Reverse the XP award and the checkpoint counter.
 	if _, _, err := r.xp.AwardXPTx(ctx, tx, userID, -xpAwarded, "checkin_deleted", id); err != nil {
 		return nil, fmt.Errorf("reverse xp: %w", err)
 	}
