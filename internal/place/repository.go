@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -200,15 +201,16 @@ func (r *Repository) Popular(ctx context.Context, near *Point, radiusM float64, 
 	return collectPlaces(rows)
 }
 
-// Feed returns community check-ins ordered nearest → farthest from (lng, lat),
-// keyset-paginated on (distance, id). cursor = "<distanceMeters>:<id>" of the
+// Feed returns community check-ins ordered newest → oldest,
+// keyset-paginated on (created_at, id). cursor = "<unix_microseconds>:<id>" of the
 // previous page's last item ("" for the first page). No radius limit.
 func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error) {
-	var cursorDist *float64
+	var cursorTime *time.Time
 	var cursorID *string
 	if parts := strings.SplitN(cursor, ":", 2); cursor != "" && len(parts) == 2 {
-		if d, err := strconv.ParseFloat(parts[0], 64); err == nil {
-			cursorDist = &d
+		if us, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
+			t := time.UnixMicro(us).UTC()
+			cursorTime = &t
 			cursorID = &parts[1]
 		}
 	}
@@ -224,11 +226,11 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
 		 FROM checkpoints c JOIN users u ON u.id = c.user_id
 		 WHERE c.deleted_at IS NULL
-		   AND ($3::float8 IS NULL
-		        OR ST_Distance(c.location, ST_MakePoint($1, $2)::geography) > $3
-		        OR (ST_Distance(c.location, ST_MakePoint($1, $2)::geography) = $3 AND c.id > $4::uuid))
-		 ORDER BY dist, c.id LIMIT $5`,
-		lng, lat, cursorDist, cursorID, limit)
+		   AND ($3::timestamptz IS NULL
+		        OR c.created_at < $3
+		        OR (c.created_at = $3 AND c.id < $4::uuid))
+		 ORDER BY c.created_at DESC, c.id DESC LIMIT $5`,
+		lng, lat, cursorTime, cursorID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("feed: %w", err)
 	}
@@ -266,7 +268,7 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 	feed := &Feed{Items: items}
 	if limit > 0 && len(items) == limit {
 		last := items[len(items)-1]
-		next := strconv.FormatFloat(last.DistanceM, 'f', -1, 64) + ":" + last.ID
+		next := strconv.FormatInt(last.CreatedAt.UnixMicro(), 10) + ":" + last.ID
 		feed.NextCursor = &next
 	}
 	return feed, nil
