@@ -38,7 +38,7 @@ type repository interface {
 	ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error)
 	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error)
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
-	AddImages(ctx context.Context, checkpointID string, urls []string, startOrder int) ([]Image, error)
+	AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error)
 	CountImages(ctx context.Context, checkpointID string) (int, error)
 	Delete(ctx context.Context, id, userID string) (imageKeys []string, err error)
 }
@@ -178,8 +178,16 @@ func (s *Service) ListNearby(ctx context.Context, lng, lat, radiusM float64, lim
 
 // ImageUpload is one image to attach to a checkpoint.
 type ImageUpload struct {
-	ContentType string
-	Body        io.Reader
+	ContentType          string
+	Body                 io.Reader
+	ThumbnailContentType string
+	ThumbnailBody        io.Reader
+}
+
+// ImageKeys are the stored original and optional thumbnail for one photo.
+type ImageKeys struct {
+	ObjectKey    string
+	ThumbnailKey *string
 }
 
 // AddImages uploads images to a checkpoint the caller owns and returns them.
@@ -214,7 +222,7 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 
 	// Upload to R2 in parallel — independent objects, so 3 photos take ~1 round
 	// trip instead of 3. Order is preserved via the indexed keys slice.
-	keys := make([]string, len(uploads))
+	keys := make([]ImageKeys, len(uploads))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxImages)
 	for i := range uploads {
@@ -224,7 +232,18 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 			if err != nil {
 				return fmt.Errorf("upload image: %w", err)
 			}
-			keys[i] = storedKey
+			keys[i].ObjectKey = storedKey
+			if uploads[i].ThumbnailBody != nil {
+				if thumbExt := imageExt(uploads[i].ThumbnailContentType); thumbExt != "" {
+					thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s%s", checkpointID, randHex(8), thumbExt)
+					storedThumb, thumbErr := s.storage.Upload(gctx, thumbKey, uploads[i].ThumbnailContentType, uploads[i].ThumbnailBody)
+					if thumbErr != nil {
+						log.Printf("upload checkpoint thumbnail: %v", thumbErr)
+					} else {
+						keys[i].ThumbnailKey = &storedThumb
+					}
+				}
+			}
 			return nil
 		})
 	}

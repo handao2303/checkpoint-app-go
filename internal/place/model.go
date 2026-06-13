@@ -41,8 +41,9 @@ type Detail struct {
 
 // DetailImage is a recent photo across the place's check-ins.
 type DetailImage struct {
-	ID  string `json:"id"`
-	URL string `json:"url"`
+	ID           string  `json:"id"`
+	URL          string  `json:"url"`
+	ThumbnailURL *string `json:"thumbnail_url,omitempty"`
 }
 
 // Review is a recent check-in note + its author.
@@ -62,20 +63,21 @@ type Author struct {
 
 // FeedItem is one community check-in in the discover feed.
 type FeedItem struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Category  string    `json:"category"`
-	Note      *string   `json:"note,omitempty"`
-	Rating    *int16    `json:"rating,omitempty"`
-	Lat       float64   `json:"lat"`
-	Lng       float64   `json:"lng"`
-	Address   *string   `json:"address,omitempty"`
-	PlaceID   *string   `json:"place_id,omitempty"`
-	XPAwarded int       `json:"xp_awarded"`
-	CreatedAt time.Time `json:"created_at"`
-	Author    Author    `json:"author"`
-	ImageURL  *string   `json:"image_url,omitempty"`
-	DistanceM float64   `json:"distance_m"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Category     string    `json:"category"`
+	Note         *string   `json:"note,omitempty"`
+	Rating       *int16    `json:"rating,omitempty"`
+	Lat          float64   `json:"lat"`
+	Lng          float64   `json:"lng"`
+	Address      *string   `json:"address,omitempty"`
+	PlaceID      *string   `json:"place_id,omitempty"`
+	XPAwarded    int       `json:"xp_awarded"`
+	CreatedAt    time.Time `json:"created_at"`
+	Author       Author    `json:"author"`
+	ImageURL     *string   `json:"image_url,omitempty"`
+	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	DistanceM    float64   `json:"distance_m"`
 }
 
 // Feed is a page of feed items with an optional keyset cursor for the next page.

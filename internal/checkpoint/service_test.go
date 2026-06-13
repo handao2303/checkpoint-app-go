@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -13,6 +14,8 @@ type fakeRepo struct {
 	lastCreate   *CreateParams
 	createResult *CreateResult
 	createErr    error
+	checkpoint   *Checkpoint
+	addedKeys    []ImageKeys
 	deleteKeys   []string
 	deleteErr    error
 }
@@ -27,7 +30,12 @@ func (f *fakeRepo) Create(_ context.Context, p CreateParams) (*CreateResult, err
 	}
 	return &CreateResult{Checkpoint: &Checkpoint{ID: "cp1"}, XPAwarded: p.XPReward, TotalXP: p.XPReward, Level: 1}, nil
 }
-func (f *fakeRepo) GetByID(context.Context, string) (*Checkpoint, error)           { return nil, ErrNotFound }
+func (f *fakeRepo) GetByID(context.Context, string) (*Checkpoint, error) {
+	if f.checkpoint != nil {
+		return f.checkpoint, nil
+	}
+	return nil, ErrNotFound
+}
 func (f *fakeRepo) GetDetail(context.Context, string) (*Detail, error)             { return nil, ErrNotFound }
 func (f *fakeRepo) ListByUser(context.Context, string, int) ([]*Checkpoint, error) { return nil, nil }
 func (f *fakeRepo) ListInBounds(context.Context, float64, float64, float64, float64, int) ([]*Checkpoint, error) {
@@ -36,7 +44,8 @@ func (f *fakeRepo) ListInBounds(context.Context, float64, float64, float64, floa
 func (f *fakeRepo) ListNearby(context.Context, float64, float64, float64, int) ([]*Checkpoint, error) {
 	return nil, nil
 }
-func (f *fakeRepo) AddImages(context.Context, string, []string, int) ([]Image, error) {
+func (f *fakeRepo) AddImages(_ context.Context, _ string, keys []ImageKeys, _ int) ([]Image, error) {
+	f.addedKeys = keys
 	return nil, nil
 }
 func (f *fakeRepo) CountImages(context.Context, string) (int, error) { return 0, nil }
@@ -46,10 +55,14 @@ func (f *fakeRepo) Delete(context.Context, string, string) ([]string, error) {
 
 // fakeStorage records deleted keys (uploads are unused in these tests).
 type fakeStorage struct {
-	deleted []string
+	deleted             []string
+	failThumbnailUpload bool
 }
 
 func (f *fakeStorage) Upload(_ context.Context, key, _ string, _ io.Reader) (string, error) {
+	if f.failThumbnailUpload && strings.Contains(key, "/thumbnails/") {
+		return "", errors.New("thumbnail upload failed")
+	}
 	return key, nil
 }
 
@@ -201,6 +214,28 @@ func TestServiceDelete_CleansUpStorage(t *testing.T) {
 	want := []string{"checkpoints/cp1/a.jpg", "checkpoints/cp1/b.jpg"}
 	if !slices.Equal(storage.deleted, want) {
 		t.Errorf("deleted keys = %v, want %v", storage.deleted, want)
+	}
+}
+
+func TestServiceAddImages_ThumbnailFailureKeepsOriginal(t *testing.T) {
+	repo := &fakeRepo{checkpoint: &Checkpoint{ID: "cp1", UserID: "user1"}}
+	storage := &fakeStorage{failThumbnailUpload: true}
+	svc := NewService(repo, storage, nil)
+
+	_, err := svc.AddImages(context.Background(), "cp1", "user1", []ImageUpload{{
+		ContentType:          "image/jpeg",
+		Body:                 strings.NewReader("original"),
+		ThumbnailContentType: "image/jpeg",
+		ThumbnailBody:        strings.NewReader("thumbnail"),
+	}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.addedKeys) != 1 || repo.addedKeys[0].ObjectKey == "" {
+		t.Fatalf("added keys = %#v, want one original", repo.addedKeys)
+	}
+	if repo.addedKeys[0].ThumbnailKey != nil {
+		t.Fatalf("thumbnail key = %v, want nil after best-effort failure", repo.addedKeys[0].ThumbnailKey)
 	}
 }
 

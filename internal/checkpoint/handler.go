@@ -13,7 +13,7 @@ import (
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 )
 
-const maxUploadBytes = 10 << 20 // 10 MiB per request
+const maxUploadBytes = 20 << 20 // 20 MiB per request
 
 // Handler exposes the checkpoint domain over HTTP.
 type Handler struct {
@@ -141,25 +141,42 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 // UploadImages attaches multipart "images" files to a checkpoint the caller owns.
 func (h *Handler) UploadImages(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 		respond.Error(w, http.StatusBadRequest, "invalid multipart form")
 		return
 	}
 	files := r.MultipartForm.File["images"]
+	thumbnails := r.MultipartForm.File["thumbnails"]
 	if len(files) == 0 {
 		respond.Error(w, http.StatusBadRequest, "at least one 'images' file is required")
 		return
 	}
+	if len(thumbnails) > 0 && len(thumbnails) != len(files) {
+		respond.Error(w, http.StatusBadRequest, "'thumbnails' must match 'images' count")
+		return
+	}
 
 	uploads := make([]ImageUpload, 0, len(files))
-	for _, fh := range files {
+	for i, fh := range files {
 		f, err := fh.Open()
 		if err != nil {
 			respond.Error(w, http.StatusBadRequest, "could not read uploaded file")
 			return
 		}
 		defer func() { _ = f.Close() }()
-		uploads = append(uploads, ImageUpload{ContentType: fh.Header.Get("Content-Type"), Body: f})
+		upload := ImageUpload{ContentType: fh.Header.Get("Content-Type"), Body: f}
+		if len(thumbnails) > 0 {
+			thumb, err := thumbnails[i].Open()
+			if err != nil {
+				respond.Error(w, http.StatusBadRequest, "could not read uploaded thumbnail")
+				return
+			}
+			defer func() { _ = thumb.Close() }()
+			upload.ThumbnailContentType = thumbnails[i].Header.Get("Content-Type")
+			upload.ThumbnailBody = thumb
+		}
+		uploads = append(uploads, upload)
 	}
 
 	images, err := h.svc.AddImages(r.Context(), chi.URLParam(r, "id"), p.UserID, uploads)

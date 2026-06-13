@@ -69,7 +69,7 @@ func (r *Repository) AwardXPTx(
 func (r *Repository) Passport(ctx context.Context, userID string) (*Passport, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT g.province, g.checkin_count, g.first_at, g.last_at,
-		        (SELECT ci.object_key
+		        (SELECT COALESCE(ci.thumbnail_key, ci.object_key)
 		           FROM checkpoints c2
 		           JOIN checkpoint_images ci ON ci.checkpoint_id = c2.id
 		          WHERE c2.user_id = $1 AND c2.deleted_at IS NULL AND c2.province = g.province

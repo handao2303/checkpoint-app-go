@@ -8,21 +8,22 @@ import (
 
 // Checkpoint is a check-in at a GPS location.
 type Checkpoint struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"user_id"`
-	Name      string    `json:"name"`
-	Category  string    `json:"category"`
-	Note      *string   `json:"note,omitempty"`
-	Rating    *int16    `json:"rating,omitempty"`
-	Lat       float64   `json:"lat"`
-	Lng       float64   `json:"lng"`
-	Address   *string   `json:"address,omitempty"`
-	PlaceID   *string   `json:"place_id,omitempty"`
-	JourneyID *string   `json:"journey_id,omitempty"`
-	ImageURL  *string   `json:"image_url,omitempty"` // first photo (populated in list)
-	XPAwarded int       `json:"xp_awarded"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	UserID       string    `json:"user_id"`
+	Name         string    `json:"name"`
+	Category     string    `json:"category"`
+	Note         *string   `json:"note,omitempty"`
+	Rating       *int16    `json:"rating,omitempty"`
+	Lat          float64   `json:"lat"`
+	Lng          float64   `json:"lng"`
+	Address      *string   `json:"address,omitempty"`
+	PlaceID      *string   `json:"place_id,omitempty"`
+	JourneyID    *string   `json:"journey_id,omitempty"`
+	ImageURL     *string   `json:"image_url,omitempty"` // first photo (populated in list)
+	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	XPAwarded    int       `json:"xp_awarded"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // CreateParams are the validated inputs for creating a checkpoint.
@@ -53,9 +54,10 @@ type CreateResult struct {
 
 // Image is a photo attached to a checkpoint.
 type Image struct {
-	ID        string `json:"id"`
-	URL       string `json:"url"`
-	SortOrder int    `json:"sort_order"`
+	ID           string  `json:"id"`
+	URL          string  `json:"url"`
+	ThumbnailURL *string `json:"thumbnail_url,omitempty"`
+	SortOrder    int     `json:"sort_order"`
 }
 
 // Author is the minimal public identity of a checkpoint's owner.

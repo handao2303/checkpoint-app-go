@@ -219,6 +219,10 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		        COALESCE((
 		          SELECT array_agg(ci.object_key ORDER BY ci.sort_order, ci.created_at)
 		          FROM checkpoint_images ci WHERE ci.checkpoint_id = c.id
+		        ), '{}'),
+		        COALESCE((
+		          SELECT array_agg(COALESCE(ci.thumbnail_key, ci.object_key) ORDER BY ci.sort_order, ci.created_at)
+		          FROM checkpoint_images ci WHERE ci.checkpoint_id = c.id
 		        ), '{}')
 		 FROM checkpoints c
 		 WHERE c.journey_id = $1 AND c.deleted_at IS NULL ORDER BY c.created_at`, id)
@@ -229,14 +233,16 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 	stops := []Stop{}
 	for rows.Next() {
 		var s Stop
-		var keys []string
+		var keys, thumbnailKeys []string
 		if err := rows.Scan(&s.ID, &s.Name, &s.Category, &s.Note, &s.Address,
-			&s.Lat, &s.Lng, &s.PlaceID, &s.CreatedAt, &keys); err != nil {
+			&s.Lat, &s.Lng, &s.PlaceID, &s.CreatedAt, &keys, &thumbnailKeys); err != nil {
 			return nil, fmt.Errorf("scan stop: %w", err)
 		}
 		s.Images = make([]string, 0, len(keys))
-		for _, k := range keys {
+		s.ThumbnailImages = make([]string, 0, len(keys))
+		for i, k := range keys {
 			s.Images = append(s.Images, storage.PublicURL(r.mediaBase, k))
+			s.ThumbnailImages = append(s.ThumbnailImages, storage.PublicURL(r.mediaBase, thumbnailKeys[i]))
 		}
 		stops = append(stops, s)
 	}

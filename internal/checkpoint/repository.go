@@ -144,6 +144,8 @@ func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) (
 	rows, err := r.db.Query(ctx,
 		`SELECT `+cpColumns+`,
 		        (SELECT object_key FROM checkpoint_images ci
+		         WHERE ci.checkpoint_id = c.id ORDER BY ci.sort_order, ci.created_at LIMIT 1),
+		        (SELECT COALESCE(thumbnail_key, object_key) FROM checkpoint_images ci
 		         WHERE ci.checkpoint_id = c.id ORDER BY ci.sort_order, ci.created_at LIMIT 1)
 		 FROM checkpoints c
 		 WHERE c.user_id = $1 AND c.deleted_at IS NULL
@@ -156,16 +158,20 @@ func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) (
 	var out []*Checkpoint
 	for rows.Next() {
 		var c Checkpoint
-		var imageKey *string
+		var imageKey, thumbnailKey *string
 		if err := rows.Scan(
 			&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt, &imageKey,
+			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt, &imageKey, &thumbnailKey,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint: %w", err)
 		}
 		if imageKey != nil {
 			u := storage.PublicURL(r.mediaBase, *imageKey)
 			c.ImageURL = &u
+		}
+		if thumbnailKey != nil {
+			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
+			c.ThumbnailURL = &u
 		}
 		out = append(out, &c)
 	}
@@ -243,7 +249,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 // ListImages returns a checkpoint's images ordered by sort_order.
 func (r *Repository) ListImages(ctx context.Context, checkpointID string) ([]Image, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, object_key, sort_order FROM checkpoint_images
+		`SELECT id, object_key, COALESCE(thumbnail_key, object_key), sort_order FROM checkpoint_images
 		 WHERE checkpoint_id = $1 ORDER BY sort_order, created_at`, checkpointID)
 	if err != nil {
 		return nil, fmt.Errorf("list images: %w", err)
@@ -253,10 +259,13 @@ func (r *Repository) ListImages(ctx context.Context, checkpointID string) ([]Ima
 	var out []Image
 	for rows.Next() {
 		var img Image
-		if err := rows.Scan(&img.ID, &img.URL, &img.SortOrder); err != nil {
+		var thumbnailKey string
+		if err := rows.Scan(&img.ID, &img.URL, &thumbnailKey, &img.SortOrder); err != nil {
 			return nil, fmt.Errorf("scan image: %w", err)
 		}
 		img.URL = storage.PublicURL(r.mediaBase, img.URL)
+		thumbnailURL := storage.PublicURL(r.mediaBase, thumbnailKey)
+		img.ThumbnailURL = &thumbnailURL
 		out = append(out, img)
 	}
 	return out, rows.Err()
@@ -264,17 +273,24 @@ func (r *Repository) ListImages(ctx context.Context, checkpointID string) ([]Ima
 
 // AddImages inserts image rows (by object key) for a checkpoint and returns them
 // with full public URLs.
-func (r *Repository) AddImages(ctx context.Context, checkpointID string, keys []string, startOrder int) ([]Image, error) {
+func (r *Repository) AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error) {
 	out := make([]Image, 0, len(keys))
 	for i, key := range keys {
 		var img Image
+		var thumbnailKey *string
 		if err := r.db.QueryRow(ctx,
-			`INSERT INTO checkpoint_images (checkpoint_id, object_key, sort_order)
-			 VALUES ($1, $2, $3) RETURNING id, object_key, sort_order`,
-			checkpointID, key, startOrder+i).Scan(&img.ID, &img.URL, &img.SortOrder); err != nil {
+			`INSERT INTO checkpoint_images (checkpoint_id, object_key, thumbnail_key, sort_order)
+			 VALUES ($1, $2, $3, $4) RETURNING id, object_key, thumbnail_key, sort_order`,
+			checkpointID, key.ObjectKey, key.ThumbnailKey, startOrder+i).
+			Scan(&img.ID, &img.URL, &thumbnailKey, &img.SortOrder); err != nil {
 			return nil, fmt.Errorf("insert image: %w", err)
 		}
 		img.URL = storage.PublicURL(r.mediaBase, img.URL)
+		thumbnailURL := img.URL
+		if thumbnailKey != nil {
+			thumbnailURL = storage.PublicURL(r.mediaBase, *thumbnailKey)
+		}
+		img.ThumbnailURL = &thumbnailURL
 		out = append(out, img)
 	}
 	return out, nil
@@ -319,17 +335,21 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 
 	// Collect image keys so the caller can clean up R2 after commit.
 	rows, err := tx.Query(ctx,
-		`SELECT object_key FROM checkpoint_images WHERE checkpoint_id = $1`, id)
+		`SELECT object_key, thumbnail_key FROM checkpoint_images WHERE checkpoint_id = $1`, id)
 	if err != nil {
 		return nil, fmt.Errorf("list image keys: %w", err)
 	}
 	for rows.Next() {
 		var key string
-		if err := rows.Scan(&key); err != nil {
+		var thumbnailKey *string
+		if err := rows.Scan(&key, &thumbnailKey); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan image key: %w", err)
 		}
 		imageKeys = append(imageKeys, key)
+		if thumbnailKey != nil {
+			imageKeys = append(imageKeys, *thumbnailKey)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {

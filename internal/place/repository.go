@@ -156,7 +156,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 
 func (r *Repository) recentImages(ctx context.Context, placeID string, limit int) ([]DetailImage, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT ci.id, ci.object_key FROM checkpoint_images ci
+		`SELECT ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key) FROM checkpoint_images ci
 		 JOIN checkpoints c ON c.id = ci.checkpoint_id
 		 WHERE c.place_id = $1 AND c.deleted_at IS NULL
 		 ORDER BY ci.created_at DESC LIMIT $2`, placeID, limit)
@@ -167,10 +167,13 @@ func (r *Repository) recentImages(ctx context.Context, placeID string, limit int
 	var out []DetailImage
 	for rows.Next() {
 		var img DetailImage
-		if err := rows.Scan(&img.ID, &img.URL); err != nil {
+		var thumbnailKey string
+		if err := rows.Scan(&img.ID, &img.URL, &thumbnailKey); err != nil {
 			return nil, fmt.Errorf("scan place image: %w", err)
 		}
 		img.URL = storage.PublicURL(r.mediaBase, img.URL)
+		thumbnailURL := storage.PublicURL(r.mediaBase, thumbnailKey)
+		img.ThumbnailURL = &thumbnailURL
 		out = append(out, img)
 	}
 	return out, rows.Err()
@@ -216,6 +219,8 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 		        u.username, u.display_name, u.avatar_key,
 		        (SELECT object_key FROM checkpoint_images ci
 		         WHERE ci.checkpoint_id = c.id ORDER BY sort_order, created_at LIMIT 1),
+		        (SELECT COALESCE(thumbnail_key, object_key) FROM checkpoint_images ci
+		         WHERE ci.checkpoint_id = c.id ORDER BY sort_order, created_at LIMIT 1),
 		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
 		 FROM checkpoints c JOIN users u ON u.id = c.user_id
 		 WHERE c.deleted_at IS NULL
@@ -232,11 +237,11 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 	items := make([]FeedItem, 0, limit)
 	for rows.Next() {
 		var it FeedItem
-		var avatarKey, imageKey *string
+		var avatarKey, imageKey, thumbnailKey *string
 		if err := rows.Scan(
 			&it.ID, &it.Name, &it.Category, &it.Note, &it.Rating, &it.Lat, &it.Lng, &it.Address,
 			&it.PlaceID, &it.XPAwarded, &it.CreatedAt,
-			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &it.DistanceM,
+			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &thumbnailKey, &it.DistanceM,
 		); err != nil {
 			return nil, fmt.Errorf("scan feed item: %w", err)
 		}
@@ -247,6 +252,10 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 		if imageKey != nil {
 			u := storage.PublicURL(r.mediaBase, *imageKey)
 			it.ImageURL = &u
+		}
+		if thumbnailKey != nil {
+			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
+			it.ThumbnailURL = &u
 		}
 		items = append(items, it)
 	}
