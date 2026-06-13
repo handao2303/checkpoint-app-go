@@ -26,10 +26,11 @@ func NewHandler(svc *Service) *Handler {
 }
 
 // Register mounts checkpoint routes under /checkpoints (all require auth).
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
+// checkinRL is applied only to POST / (the create-checkpoint route).
+func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler, checkinRL func(http.Handler) http.Handler) {
 	r.Route("/checkpoints", func(r chi.Router) {
 		r.Use(auth)
-		r.Post("/", h.Create)
+		r.With(checkinRL).Post("/", h.Create)
 		r.Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (for the map)
 		r.Get("/nearby", h.ListNearby)
 		r.Get("/me", h.ListMine)
