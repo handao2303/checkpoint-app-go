@@ -34,6 +34,9 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler, c
 		r.Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (for the map)
 		r.Get("/nearby", h.ListNearby)
 		r.Get("/me", h.ListMine)
+		// Static route must be registered before /{id} so chi doesn't treat
+		// "upload-slots" as a checkpoint ID.
+		r.Post("/upload-slots", h.PrepareSlots)
 		r.Get("/{id}", h.Get)
 		r.Post("/{id}/images", h.UploadImages)
 		r.Post("/{id}/upload-urls", h.GetUploadURLs)
@@ -53,9 +56,13 @@ type createRequest struct {
 	Province  *string `json:"province"`
 	PlaceID   *string `json:"place_id"`
 	JourneyID *string `json:"journey_id"`
+	Images    []struct {
+		ObjectKey    string  `json:"object_key"`
+		ThumbnailKey *string `json:"thumbnail_key"`
+	} `json:"images"`
 }
 
-// Create handles a check-in.
+// Create handles a check-in. The request body must include pre-uploaded image keys.
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	var req createRequest
@@ -63,7 +70,27 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	result, err := h.svc.Create(r.Context(), p.UserID, Input(req))
+	if len(req.Images) == 0 {
+		respond.Error(w, http.StatusBadRequest, "ít nhất 1 ảnh")
+		return
+	}
+	images := make([]ImageKeys, len(req.Images))
+	for i, img := range req.Images {
+		images[i] = ImageKeys{ObjectKey: img.ObjectKey, ThumbnailKey: img.ThumbnailKey}
+	}
+	result, err := h.svc.Create(r.Context(), p.UserID, Input{
+		Name:      req.Name,
+		Category:  req.Category,
+		Note:      req.Note,
+		Rating:    req.Rating,
+		Lat:       req.Lat,
+		Lng:       req.Lng,
+		Address:   req.Address,
+		Province:  req.Province,
+		PlaceID:   req.PlaceID,
+		JourneyID: req.JourneyID,
+		Images:    images,
+	})
 	if err != nil {
 		if errors.Is(err, ErrInvalidInput) {
 			respond.Error(w, http.StatusBadRequest, err.Error())
@@ -73,6 +100,29 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusCreated, result)
+}
+
+// PrepareSlots issues presigned R2 PUT URLs for the client to upload images
+// before creating the checkpoint. Body: { "count": N } (1 ≤ N ≤ 10).
+func (h *Handler) PrepareSlots(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	var req struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Count < 1 || req.Count > maxImages {
+		respond.Error(w, http.StatusBadRequest, "count must be 1–10")
+		return
+	}
+	slots, err := h.svc.PrepareSlots(r.Context(), p.UserID, req.Count)
+	if err != nil {
+		if errors.Is(err, ErrInvalidInput) {
+			respond.Error(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		respond.Error(w, http.StatusInternalServerError, "could not prepare slots")
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"slots": slots})
 }
 
 // ListMine returns the caller's checkpoints.

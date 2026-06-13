@@ -36,10 +36,11 @@ type CreateParams struct {
 	Lat       float64
 	Lng       float64
 	Address   *string
-	Province  *string // resolved province for the passport (best-effort)
-	PlaceID   *string // optional: check-in to a specific place (else resolved)
-	JourneyID *string // optional: attach to a journey (else active journey)
+	Province  *string     // resolved province for the passport (best-effort)
+	PlaceID   *string     // optional: check-in to a specific place (else resolved)
+	JourneyID *string     // optional: attach to a journey (else active journey)
 	XPReward  int
+	Images    []ImageKeys // pre-uploaded images to link in the same tx (required ≥ 1)
 }
 
 // CreateResult is the outcome of a check-in: the new checkpoint plus the user's

@@ -117,12 +117,29 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		return nil, fmt.Errorf("evaluate badges: %w", err)
 	}
 
+	if err := insertImagesTx(ctx, tx, cp.ID, p.Images); err != nil {
+		return nil, fmt.Errorf("insert images: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
 	return &CreateResult{
 		Checkpoint: cp, XPAwarded: p.XPReward, TotalXP: totalXP, Level: level, NewBadges: newBadges,
 	}, nil
+}
+
+// insertImagesTx inserts checkpoint_images rows inside an existing transaction.
+func insertImagesTx(ctx context.Context, tx pgx.Tx, checkpointID string, keys []ImageKeys) error {
+	for i, key := range keys {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO checkpoint_images (checkpoint_id, object_key, thumbnail_key, sort_order)
+			 VALUES ($1, $2, $3, $4)`,
+			checkpointID, key.ObjectKey, key.ThumbnailKey, i); err != nil {
+			return fmt.Errorf("insert image row: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetByID returns a checkpoint by id.

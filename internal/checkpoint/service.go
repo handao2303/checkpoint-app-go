@@ -82,6 +82,8 @@ type Input struct {
 	Province  *string
 	PlaceID   *string
 	JourneyID *string
+	// Images are keys for files already uploaded directly to R2. Required (≥1).
+	Images []ImageKeys
 }
 
 // Create validates input and creates a checkpoint, awarding XP.
@@ -95,6 +97,20 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 	}
 	if in.Rating != nil && (*in.Rating < 1 || *in.Rating > 5) {
 		return nil, fmt.Errorf("%w: rating must be 1..5", ErrInvalidInput)
+	}
+	if len(in.Images) < 1 {
+		return nil, fmt.Errorf("%w: ít nhất 1 ảnh", ErrInvalidInput)
+	}
+	if len(in.Images) > maxImages {
+		return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
+	}
+	for _, img := range in.Images {
+		if !strings.HasPrefix(img.ObjectKey, "checkpoints/") {
+			return nil, fmt.Errorf("%w: invalid image key", ErrInvalidInput)
+		}
+		if img.ThumbnailKey != nil && !strings.HasPrefix(*img.ThumbnailKey, "checkpoints/") {
+			return nil, fmt.Errorf("%w: invalid thumbnail key", ErrInvalidInput)
+		}
 	}
 	category := strings.TrimSpace(in.Category)
 	if category == "" {
@@ -143,6 +159,7 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		PlaceID:   in.PlaceID,
 		JourneyID: journeyID,
 		XPReward:  checkinXP,
+		Images:    in.Images,
 	})
 }
 
@@ -267,8 +284,33 @@ type UploadSlot struct {
 
 const presignTTL = 300 // seconds
 
+// PrepareSlots generates presigned R2 PUT URLs before the checkpoint exists.
+// The client uploads files directly to R2, then includes the returned keys in
+// the POST /checkpoints body — creating the checkpoint and linking images atomically.
+func (s *Service) PrepareSlots(_ context.Context, _ string, count int) ([]UploadSlot, error) {
+	if count < 1 || count > maxImages {
+		return nil, fmt.Errorf("%w: count must be 1–%d", ErrInvalidInput, maxImages)
+	}
+	// Use a random 16-byte prefix so keys are unguessable. The checkpoint ID
+	// (assigned by the DB) will differ — the service validates "checkpoints/" prefix.
+	prefix := randHex(16)
+	slots := make([]UploadSlot, count)
+	for i := range slots {
+		objKey := fmt.Sprintf("checkpoints/%s/%s.jpg", prefix, randHex(8))
+		thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s.jpg", prefix, randHex(8))
+		slots[i] = UploadSlot{
+			UploadURL:          s.storage.PresignUpload(objKey, presignTTL),
+			ObjectKey:          objKey,
+			ThumbnailUploadURL: s.storage.PresignUpload(thumbKey, presignTTL),
+			ThumbnailKey:       thumbKey,
+		}
+	}
+	return slots, nil
+}
+
 // PrepareUploads generates presigned R2 PUT URLs so the client can upload
 // images directly to storage without routing the file bytes through this server.
+// Deprecated: use PrepareSlots + include images in POST /checkpoints body.
 func (s *Service) PrepareUploads(ctx context.Context, checkpointID, userID string, count int) ([]UploadSlot, error) {
 	if count < 1 {
 		return nil, fmt.Errorf("%w: count must be ≥ 1", ErrInvalidInput)

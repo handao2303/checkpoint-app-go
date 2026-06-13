@@ -78,11 +78,14 @@ func (f *fakeStorage) PresignUpload(key string, _ int) string {
 func ratingPtr(v int16) *int16   { return &v }
 func stringPtr(v string) *string { return &v }
 
+// testImages is a minimal valid Images slice for tests that don't care about images.
+var testImages = []ImageKeys{{ObjectKey: "checkpoints/test/abc12345.jpg"}}
+
 func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	repo := &fakeRepo{}
 	svc := NewService(repo, nil, nil)
 
-	res, err := svc.Create(context.Background(), "user1", Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6})
+	res, err := svc.Create(context.Background(), "user1", Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Images: testImages})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +108,7 @@ func TestServiceCreate_StoresClientAddress(t *testing.T) {
 	if _, err := NewService(repo, nil, nil).Create(
 		context.Background(),
 		"user1",
-		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: &addr, Province: &prov},
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: &addr, Province: &prov, Images: testImages},
 	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -124,7 +127,7 @@ func TestServiceCreate_HandlesBlankAddress(t *testing.T) {
 	if _, err := NewService(repo, nil, nil).Create(
 		context.Background(),
 		"user1",
-		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: &blank},
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Address: &blank, Images: testImages},
 	); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -161,7 +164,7 @@ func TestServiceCreate_ForwardsPlaceID(t *testing.T) {
 	repo := &fakeRepo{}
 	pid := "place-123"
 	_, err := NewService(repo, nil, nil).Create(
-		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, PlaceID: &pid})
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, PlaceID: &pid, Images: testImages})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -180,7 +183,7 @@ func TestServiceCreate_AttachesOwnedJourney(t *testing.T) {
 	repo := &fakeRepo{}
 	jid := "journey-1"
 	_, err := NewService(repo, nil, &fakeJourneys{owns: true}).Create(
-		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid})
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid, Images: testImages})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,7 +196,7 @@ func TestServiceCreate_RejectsForeignJourney(t *testing.T) {
 	repo := &fakeRepo{}
 	jid := "someone-elses-journey"
 	_, err := NewService(repo, nil, &fakeJourneys{owns: false}).Create(
-		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid})
+		context.Background(), "u1", Input{Name: "Quán", Lat: 10, Lng: 106, JourneyID: &jid, Images: testImages})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
