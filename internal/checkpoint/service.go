@@ -47,6 +47,9 @@ type repository interface {
 type fileStorage interface {
 	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
 	Delete(ctx context.Context, key string) error
+	// PresignUpload returns a presigned PUT URL valid for ttlSeconds, allowing
+	// browsers to upload directly to R2 without routing through this server.
+	PresignUpload(key string, ttlSeconds int) string
 }
 
 // journeyValidator checks that a chosen journey belongs to the user, so a
@@ -250,6 +253,87 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
+	return s.repo.AddImages(ctx, checkpointID, keys, existing)
+}
+
+// UploadSlot holds a presigned PUT URL and the key that will be stored once the
+// browser finishes uploading.
+type UploadSlot struct {
+	UploadURL          string `json:"upload_url"`
+	ObjectKey          string `json:"object_key"`
+	ThumbnailUploadURL string `json:"thumbnail_upload_url"`
+	ThumbnailKey       string `json:"thumbnail_key"`
+}
+
+const presignTTL = 300 // seconds
+
+// PrepareUploads generates presigned R2 PUT URLs so the client can upload
+// images directly to storage without routing the file bytes through this server.
+func (s *Service) PrepareUploads(ctx context.Context, checkpointID, userID string, count int) ([]UploadSlot, error) {
+	if count < 1 {
+		return nil, fmt.Errorf("%w: count must be ≥ 1", ErrInvalidInput)
+	}
+	cp, err := s.repo.GetByID(ctx, checkpointID)
+	if err != nil {
+		return nil, err
+	}
+	if cp.UserID != userID {
+		return nil, ErrNotFound
+	}
+	existing, err := s.repo.CountImages(ctx, checkpointID)
+	if err != nil {
+		return nil, err
+	}
+	if existing+count > maxImages {
+		return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
+	}
+
+	slots := make([]UploadSlot, count)
+	for i := range slots {
+		objKey := fmt.Sprintf("checkpoints/%s/%s.jpg", checkpointID, randHex(8))
+		thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s.jpg", checkpointID, randHex(8))
+		slots[i] = UploadSlot{
+			UploadURL:          s.storage.PresignUpload(objKey, presignTTL),
+			ObjectKey:          objKey,
+			ThumbnailUploadURL: s.storage.PresignUpload(thumbKey, presignTTL),
+			ThumbnailKey:       thumbKey,
+		}
+	}
+	return slots, nil
+}
+
+// LinkImages records image keys that were uploaded directly to R2 by the client.
+// Keys are validated to belong to the checkpoint's namespace.
+func (s *Service) LinkImages(ctx context.Context, checkpointID, userID string, keys []ImageKeys) ([]Image, error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("%w: no images", ErrInvalidInput)
+	}
+	cp, err := s.repo.GetByID(ctx, checkpointID)
+	if err != nil {
+		return nil, err
+	}
+	if cp.UserID != userID {
+		return nil, ErrNotFound
+	}
+	existing, err := s.repo.CountImages(ctx, checkpointID)
+	if err != nil {
+		return nil, err
+	}
+	if existing+len(keys) > maxImages {
+		return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
+	}
+
+	// Guard against linking arbitrary R2 objects from other checkpoints.
+	prefix := fmt.Sprintf("checkpoints/%s/", checkpointID)
+	for _, k := range keys {
+		if !strings.HasPrefix(k.ObjectKey, prefix) {
+			return nil, fmt.Errorf("%w: object key outside checkpoint namespace", ErrInvalidInput)
+		}
+		if k.ThumbnailKey != nil && !strings.HasPrefix(*k.ThumbnailKey, prefix) {
+			return nil, fmt.Errorf("%w: thumbnail key outside checkpoint namespace", ErrInvalidInput)
+		}
+	}
+
 	return s.repo.AddImages(ctx, checkpointID, keys, existing)
 }
 

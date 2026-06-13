@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -127,6 +129,47 @@ func (c *R2) Delete(ctx context.Context, key string) error {
 		return fmt.Errorf("r2 delete failed: status %d: %s", resp.StatusCode, msg)
 	}
 	return nil
+}
+
+// PresignUpload returns a presigned PUT URL valid for ttlSeconds. The browser
+// can PUT any body directly to R2 without an Authorization header — the
+// signature is embedded in the query string. SignedHeaders = host only, so the
+// browser may send any Content-Type it likes (R2 stores it verbatim).
+func (c *R2) PresignUpload(key string, ttlSeconds int) string {
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	scope := dateStamp + "/" + r2Region + "/" + r2Service + "/aws4_request"
+	canonicalURI := "/" + c.cfg.Bucket + "/" + uriEncodePath(key)
+
+	// url.Values.Encode() sorts keys alphabetically — required for canonical form.
+	q := url.Values{
+		"X-Amz-Algorithm":     {"AWS4-HMAC-SHA256"},
+		"X-Amz-Credential":    {c.cfg.AccessKey + "/" + scope},
+		"X-Amz-Date":          {amzDate},
+		"X-Amz-Expires":       {strconv.Itoa(ttlSeconds)},
+		"X-Amz-SignedHeaders": {"host"},
+	}
+	canonicalQueryString := q.Encode()
+
+	canonicalRequest := strings.Join([]string{
+		"PUT", canonicalURI, canonicalQueryString,
+		"host:" + c.host + "\n",
+		"host",
+		"UNSIGNED-PAYLOAD",
+	}, "\n")
+
+	stringToSign := strings.Join([]string{
+		"AWS4-HMAC-SHA256", amzDate, scope, hexSHA256([]byte(canonicalRequest)),
+	}, "\n")
+
+	sigKey := hmacSHA256([]byte("AWS4"+c.cfg.SecretKey), []byte(dateStamp))
+	sigKey = hmacSHA256(sigKey, []byte(r2Region))
+	sigKey = hmacSHA256(sigKey, []byte(r2Service))
+	sigKey = hmacSHA256(sigKey, []byte("aws4_request"))
+	q.Set("X-Amz-Signature", hex.EncodeToString(hmacSHA256(sigKey, []byte(stringToSign))))
+
+	return "https://" + c.host + canonicalURI + "?" + q.Encode()
 }
 
 // authorization builds the SigV4 Authorization header value. contentType may be

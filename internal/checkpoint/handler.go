@@ -35,6 +35,8 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
 		r.Get("/me", h.ListMine)
 		r.Get("/{id}", h.Get)
 		r.Post("/{id}/images", h.UploadImages)
+		r.Post("/{id}/upload-urls", h.GetUploadURLs)
+		r.Post("/{id}/images/link", h.LinkImages)
 		r.Delete("/{id}", h.Delete)
 	})
 }
@@ -190,6 +192,66 @@ func (h *Handler) UploadImages(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusBadRequest, err.Error())
 		default:
 			respond.Error(w, http.StatusInternalServerError, "could not upload images")
+		}
+		return
+	}
+	respond.JSON(w, http.StatusCreated, map[string]any{"images": images})
+}
+
+// GetUploadURLs issues presigned R2 PUT URLs so the client can upload images
+// directly to storage. Body: { "count": N } (1 ≤ N ≤ 3).
+func (h *Handler) GetUploadURLs(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	var req struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Count < 1 || req.Count > maxImages {
+		respond.Error(w, http.StatusBadRequest, "count must be 1–10")
+		return
+	}
+	slots, err := h.svc.PrepareUploads(r.Context(), chi.URLParam(r, "id"), p.UserID, req.Count)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		case errors.Is(err, ErrInvalidInput):
+			respond.Error(w, http.StatusBadRequest, err.Error())
+		default:
+			respond.Error(w, http.StatusInternalServerError, "could not prepare uploads")
+		}
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"slots": slots})
+}
+
+// LinkImages records R2 keys that the client uploaded directly. No file bytes
+// are received here — only the key strings returned by GetUploadURLs.
+// Body: { "images": [{ "object_key": "...", "thumbnail_key": "..." }] }
+func (h *Handler) LinkImages(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	var req struct {
+		Images []struct {
+			ObjectKey    string  `json:"object_key"`
+			ThumbnailKey *string `json:"thumbnail_key"`
+		} `json:"images"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Images) == 0 {
+		respond.Error(w, http.StatusBadRequest, "images required")
+		return
+	}
+	keys := make([]ImageKeys, len(req.Images))
+	for i, img := range req.Images {
+		keys[i] = ImageKeys{ObjectKey: img.ObjectKey, ThumbnailKey: img.ThumbnailKey}
+	}
+	images, err := h.svc.LinkImages(r.Context(), chi.URLParam(r, "id"), p.UserID, keys)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		case errors.Is(err, ErrInvalidInput):
+			respond.Error(w, http.StatusBadRequest, err.Error())
+		default:
+			respond.Error(w, http.StatusInternalServerError, "could not link images")
 		}
 		return
 	}
