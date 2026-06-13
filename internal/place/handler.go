@@ -50,7 +50,7 @@ func (h *Handler) Popular(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"places": places})
 }
 
-// Feed returns community check-ins nearest → farthest (?lat&lng&cursor&limit).
+// Feed returns community check-ins newest → oldest (?lat&lng&cursor&limit).
 func (h *Handler) Feed(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
