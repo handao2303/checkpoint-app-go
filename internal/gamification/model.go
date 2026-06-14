@@ -52,10 +52,16 @@ type Leaderboard struct {
 }
 
 // Badge is an achievement definition (catalog entry).
+//
+// Icon is a key into the web client's self-hosted SVG icon registry (not an
+// emoji), and Color is a palette token (see the web BadgeMedal component) used
+// to render a coloured medallion — and, later, a flair overlaid on the profile
+// avatar.
 type Badge struct {
 	Key         string `json:"key"`
 	Name        string `json:"name"`
 	Icon        string `json:"icon"`
+	Color       string `json:"color"`
 	Description string `json:"description"`
 }
 
