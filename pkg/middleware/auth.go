@@ -34,3 +34,20 @@ func Auth(a Authenticator) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// OptionalAuth attaches the principal when a valid Bearer token is present, but
+// lets the request through anonymously when the token is missing or invalid.
+// Handlers personalize via authctx.From (ok=false → anonymous).
+func OptionalAuth(a Authenticator) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := r.Header.Get("Authorization")
+			if strings.HasPrefix(header, "Bearer ") {
+				if principal, err := a.Authenticate(strings.TrimPrefix(header, "Bearer ")); err == nil {
+					r = r.WithContext(authctx.With(r.Context(), principal))
+				}
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

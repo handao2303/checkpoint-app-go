@@ -69,6 +69,12 @@ func (r *Repository) Summary(ctx context.Context, checkpointID, userID string) (
 		return nil, fmt.Errorf("iterate reaction counts: %w", err)
 	}
 
+	// Anonymous caller (optional auth) has no userID — skip the "mine" lookup,
+	// both to avoid an "invalid UUID" error and because it's always null.
+	if userID == "" {
+		return s, nil
+	}
+
 	var mine string
 	err = r.db.QueryRow(ctx,
 		`SELECT reaction FROM checkpoint_reactions WHERE checkpoint_id = $1 AND user_id = $2`,

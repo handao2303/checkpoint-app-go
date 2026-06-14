@@ -21,16 +21,16 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Register mounts journey routes under /journeys (all require auth).
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
+// Register mounts journey routes under /journeys. GET /{id} uses optionalAuth so
+// a shared journey is viewable anonymously; the rest require auth.
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
 	r.Route("/journeys", func(r chi.Router) {
-		r.Use(auth)
-		r.Post("/", h.Create)
-		r.Get("/me", h.ListMine)
-		r.Get("/{id}", h.Get)
-		r.Patch("/{id}", h.Update)
-		r.Delete("/{id}", h.Delete)
-		r.Post("/{id}/checkpoints/{cpId}", h.AssignCheckpoint)
+		r.With(optionalAuth).Get("/{id}", h.Get) // shared journey page
+		r.With(auth).Post("/", h.Create)
+		r.With(auth).Get("/me", h.ListMine)
+		r.With(auth).Patch("/{id}", h.Update)
+		r.With(auth).Delete("/{id}", h.Delete)
+		r.With(auth).Post("/{id}/checkpoints/{cpId}", h.AssignCheckpoint)
 	})
 }
 

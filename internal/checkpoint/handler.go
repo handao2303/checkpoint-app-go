@@ -25,25 +25,26 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Register mounts checkpoint routes under /checkpoints (all require auth).
-// checkinRL is applied only to POST / (the create-checkpoint route).
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler, checkinRL func(http.Handler) http.Handler) {
+// Register mounts checkpoint routes under /checkpoints. Most require auth;
+// the share-page reads ({id}, by-user, {id}/view) use optionalAuth so anonymous
+// visitors can view shared checkpoints. checkinRL is applied only to POST /.
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler, checkinRL func(http.Handler) http.Handler) {
 	r.Route("/checkpoints", func(r chi.Router) {
-		r.Use(auth)
-		r.With(checkinRL).Post("/", h.Create)
-		r.Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (for the map)
-		r.Get("/nearby", h.ListNearby)
-		r.Get("/me", h.ListMine)
-		r.Get("/by-user", h.ListByUser) // ?user_id={id} — public profile gallery
-		// Static route must be registered before /{id} so chi doesn't treat
-		// "upload-slots" as a checkpoint ID.
-		r.Post("/upload-slots", h.PrepareSlots)
-		r.Get("/{id}", h.Get)
-		r.Post("/{id}/view", h.View)
-		r.Post("/{id}/images", h.UploadImages)
-		r.Post("/{id}/upload-urls", h.GetUploadURLs)
-		r.Post("/{id}/images/link", h.LinkImages)
-		r.Delete("/{id}", h.Delete)
+		// Public (optional auth) — shared checkpoint pages.
+		r.With(optionalAuth).Get("/by-user", h.ListByUser) // ?user_id={id} — profile gallery
+		r.With(optionalAuth).Get("/{id}", h.Get)
+		r.With(optionalAuth).Post("/{id}/view", h.View)
+
+		// Private (require auth).
+		r.With(auth, checkinRL).Post("/", h.Create)
+		r.With(auth).Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (map)
+		r.With(auth).Get("/nearby", h.ListNearby)
+		r.With(auth).Get("/me", h.ListMine)
+		r.With(auth).Post("/upload-slots", h.PrepareSlots)
+		r.With(auth).Post("/{id}/images", h.UploadImages)
+		r.With(auth).Post("/{id}/upload-urls", h.GetUploadURLs)
+		r.With(auth).Post("/{id}/images/link", h.LinkImages)
+		r.With(auth).Delete("/{id}", h.Delete)
 	})
 }
 

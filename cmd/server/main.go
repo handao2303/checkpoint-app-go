@@ -141,11 +141,14 @@ func run() error {
 	authenticated := func(next http.Handler) http.Handler {
 		return auth(userLimiter.ByUser(next))
 	}
-	identityHandler.Register(r, authenticated)
-	checkpointHandler.Register(r, authenticated, checkinLimiter.ByUser)
-	reactionHandler.Register(r, authenticated)
-	placeHandler.Register(r, authenticated)
-	journeyHandler.Register(r, authenticated)
+	// optionalAuth attaches the principal if a token is present but allows
+	// anonymous access — used for public share/discover read endpoints.
+	optionalAuth := appmw.OptionalAuth(tokens)
+	identityHandler.Register(r, authenticated, optionalAuth)
+	checkpointHandler.Register(r, authenticated, optionalAuth, checkinLimiter.ByUser)
+	reactionHandler.Register(r, authenticated, optionalAuth)
+	placeHandler.Register(r, authenticated, optionalAuth)
+	journeyHandler.Register(r, authenticated, optionalAuth)
 	gamificationHandler.Register(r, authenticated)
 	googlePlacesHandler.Register(r, authenticated)
 

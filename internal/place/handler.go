@@ -21,16 +21,17 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Register mounts place routes under /places (all require auth).
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
+// Register mounts place routes under /places. The discover for-you feed and a
+// place detail use optionalAuth so they're viewable anonymously (public discover
+// + shared pages); the following feed and search/popular/nearby require auth.
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
 	r.Route("/places", func(r chi.Router) {
-		r.Use(auth)
-		r.Get("/search", h.Search)
-		r.Get("/nearby", h.Nearby)
-		r.Get("/popular", h.Popular)
-		r.Get("/{id}", h.Get)
+		r.With(auth).Get("/search", h.Search)
+		r.With(auth).Get("/nearby", h.Nearby)
+		r.With(auth).Get("/popular", h.Popular)
+		r.With(optionalAuth).Get("/{id}", h.Get)
 	})
-	r.With(auth).Get("/discover/feed", h.Feed)
+	r.With(optionalAuth).Get("/discover/feed", h.Feed)
 	r.With(auth).Get("/discover/feed/following", h.FeedFollowing)
 }
 

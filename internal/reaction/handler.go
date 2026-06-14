@@ -21,11 +21,12 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// Register mounts reaction routes (all require auth). Full paths are used with
-// r.With(auth) rather than r.Route("/checkpoints") so they don't collide with
-// the checkpoint handler's own /checkpoints subrouter.
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
-	r.With(auth).Get("/checkpoints/{id}/reactions", h.Summary)
+// Register mounts reaction routes. The summary read uses optionalAuth so shared
+// checkpoint pages show counts anonymously (mine=null); set/remove require auth.
+// Full paths are used with r.With(...) rather than r.Route("/checkpoints") so they
+// don't collide with the checkpoint handler's own /checkpoints subrouter.
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
+	r.With(optionalAuth).Get("/checkpoints/{id}/reactions", h.Summary)
 	r.With(auth).Post("/checkpoints/{id}/reaction", h.Set)
 	r.With(auth).Delete("/checkpoints/{id}/reaction", h.Remove)
 }

@@ -25,22 +25,22 @@ func NewHandler(svc *Service) *Handler {
 
 // Register mounts the identity routes. auth is the middleware that guards
 // authenticated endpoints.
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/exchange", h.Exchange)
 		r.Post("/refresh", h.Refresh)
 		r.Post("/logout", h.Logout)
 	})
 	r.Route("/users", func(r chi.Router) {
-		r.Use(auth)
-		r.Get("/me", h.GetMe)
-		r.Patch("/me", h.UpdateProfile)
-		r.Post("/me/avatar", h.UploadAvatar)
+		r.With(auth).Get("/me", h.GetMe)
+		r.With(auth).Patch("/me", h.UpdateProfile)
+		r.With(auth).Post("/me/avatar", h.UploadAvatar)
 		// Static /following must precede /{username} so it isn't read as a username.
-		r.Get("/following", h.GetFollowing)
-		r.Get("/{username}", h.GetByUsername)
-		r.Post("/{username}/follow", h.Follow)
-		r.Delete("/{username}/follow", h.Unfollow)
+		r.With(auth).Get("/following", h.GetFollowing)
+		// Public profile (shared) — optional auth.
+		r.With(optionalAuth).Get("/{username}", h.GetByUsername)
+		r.With(auth).Post("/{username}/follow", h.Follow)
+		r.With(auth).Delete("/{username}/follow", h.Unfollow)
 	})
 }
 
