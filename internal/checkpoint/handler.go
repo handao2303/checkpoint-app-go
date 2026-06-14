@@ -34,6 +34,7 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler, c
 		r.Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (for the map)
 		r.Get("/nearby", h.ListNearby)
 		r.Get("/me", h.ListMine)
+		r.Get("/by-user", h.ListByUser) // ?user_id={id} — public profile gallery
 		// Static route must be registered before /{id} so chi doesn't treat
 		// "upload-slots" as a checkpoint ID.
 		r.Post("/upload-slots", h.PrepareSlots)
@@ -131,6 +132,23 @@ func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	list, err := h.svc.ListMine(r.Context(), p.UserID, limit)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
+}
+
+// ListByUser returns a user's checkpoints by id (?user_id=...). Public — used
+// by the profile gallery when viewing someone else.
+func (h *Handler) ListByUser(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		respond.Error(w, http.StatusBadRequest, "user_id is required")
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := h.svc.ListByUser(r.Context(), userID, limit)
 	if err != nil {
 		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
 		return

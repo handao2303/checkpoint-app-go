@@ -385,8 +385,9 @@ func (s *Service) LinkImages(ctx context.Context, checkpointID, userID string, k
 	return s.repo.AddImages(ctx, checkpointID, keys, existing)
 }
 
-// ListMine returns the caller's checkpoints (limit clamped to [1, maxListLimit]).
-func (s *Service) ListMine(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
+// ListByUser returns a user's checkpoints, newest first (limit clamped to
+// [1, maxListLimit]). Checkpoints are public, so no ownership check.
+func (s *Service) ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
@@ -394,6 +395,11 @@ func (s *Service) ListMine(ctx context.Context, userID string, limit int) ([]*Ch
 		limit = maxListLimit
 	}
 	return s.repo.ListByUser(ctx, userID, limit)
+}
+
+// ListMine returns the caller's checkpoints.
+func (s *Service) ListMine(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
+	return s.ListByUser(ctx, userID, limit)
 }
 
 // Delete hard-deletes a checkpoint the caller owns (XP/stats reversed, orphaned
