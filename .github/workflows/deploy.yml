@@ -29,7 +29,7 @@ jobs:
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message: "🚀 <b>[Backend]</b> Deploy bắt đầu — <code>${{ github.ref_name }}</code> (${{ github.sha }})"
+          message: "🚀 <b>[Backend]</b> Deploy bắt đầu — <code>${{ github.ref_name }}</code> (${{ github.sha }}) message: ${{ github.event.head_commit.message }}"
 
   test:
     name: Test
@@ -127,6 +127,7 @@ jobs:
       R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
       R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL }}
       GEOCODER_ENABLED: ${{ vars.GEOCODER_ENABLED }}
+      LOCATIONIQ_API_KEY: ${{ secrets.LOCATIONIQ_API_KEY }}
       RATE_LIMIT_ENABLED: ${{ vars.RATE_LIMIT_ENABLED }}
       RATE_LIMIT_REQUESTS_PER_MINUTE: ${{ vars.RATE_LIMIT_REQUESTS_PER_MINUTE }}
       RATE_LIMIT_BURST: ${{ vars.RATE_LIMIT_BURST }}
@@ -192,6 +193,7 @@ jobs:
             --arg R2_PUBLIC_URL "$R2_PUBLIC_URL" \
             --arg REDIS_URL "$REDIS_URL" \
             --arg GEOCODER_ENABLED "$GEOCODER_ENABLED" \
+            --arg LOCATIONIQ_API_KEY "$LOCATIONIQ_API_KEY" \
             --arg RATE_LIMIT_ENABLED "$RATE_LIMIT_ENABLED" \
             --arg RATE_LIMIT_REQUESTS_PER_MINUTE "$RATE_LIMIT_REQUESTS_PER_MINUTE" \
             --arg RATE_LIMIT_BURST "$RATE_LIMIT_BURST" \
@@ -210,6 +212,7 @@ jobs:
               R2_PUBLIC_URL: $R2_PUBLIC_URL,
               REDIS_URL: $REDIS_URL,
               GEOCODER_ENABLED: $GEOCODER_ENABLED,
+              LOCATIONIQ_API_KEY: $LOCATIONIQ_API_KEY,
               RATE_LIMIT_ENABLED: $RATE_LIMIT_ENABLED,
               RATE_LIMIT_REQUESTS_PER_MINUTE: $RATE_LIMIT_REQUESTS_PER_MINUTE,
               RATE_LIMIT_BURST: $RATE_LIMIT_BURST

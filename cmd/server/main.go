@@ -22,6 +22,7 @@ import (
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/gamification"
+	"github.com/quanluon/checkpoint-app/internal/locationiq"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
 	"github.com/quanluon/checkpoint-app/internal/place"
@@ -81,6 +82,7 @@ func run() error {
 	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
 	checkpointHandler := checkpoint.NewHandler(
 		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo), r2, journeyRepo))
+	googlePlacesHandler := locationiq.NewHandler(locationiq.NewClient(cfg.placesAPIKey))
 
 	corsOpts := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -142,6 +144,7 @@ func run() error {
 	placeHandler.Register(r, authenticated)
 	journeyHandler.Register(r, authenticated)
 	gamificationHandler.Register(r, authenticated)
+	googlePlacesHandler.Register(r, authenticated)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -174,17 +177,18 @@ func run() error {
 }
 
 type config struct {
-	port        string
-	env         string
-	databaseURL string
-	redisURL    string
-	jwtSecret   string
-	supabaseURL string
-	corsOrigins []string
-	accessTTL   time.Duration
-	refreshTTL  time.Duration
-	r2          storage.R2Config
-	rateLimit   appmw.RateLimitConfig
+	port          string
+	env           string
+	databaseURL   string
+	redisURL      string
+	jwtSecret     string
+	supabaseURL   string
+	corsOrigins   []string
+	accessTTL     time.Duration
+	refreshTTL    time.Duration
+	r2            storage.R2Config
+	rateLimit     appmw.RateLimitConfig
+	placesAPIKey  string
 }
 
 func loadConfig() (config, error) {
@@ -206,6 +210,7 @@ func loadConfig() (config, error) {
 		rateLimit: appmw.RateLimitConfig{
 			Enabled: boolEnv("RATE_LIMIT_ENABLED", true),
 		},
+		placesAPIKey: os.Getenv("LOCATIONIQ_API_KEY"),
 	}
 
 	var err error
