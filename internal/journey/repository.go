@@ -199,31 +199,32 @@ func (r *Repository) AssignCheckpoint(ctx context.Context, journeyID, checkpoint
 // GetDetail returns a journey with stats (count, XP, distance via PostGIS) and
 // its ordered stops (J2).
 func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) {
-	j, err := r.GetByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
+	// Fetch journey + denormalized stats in one query.
+	var j Journey
 	var stats Stats
 	if err := r.db.QueryRow(ctx,
-		`SELECT COUNT(*),
-		        COALESCE(SUM(xp_awarded), 0),
-		        COALESCE(ST_Length(ST_MakeLine(location::geometry ORDER BY created_at)::geography) / 1000, 0)
+		`SELECT `+journeyColumns+`, checkpoint_count, total_xp
+		 FROM journeys WHERE id = $1 AND deleted_at IS NULL`, id).
+		Scan(&j.ID, &j.UserID, &j.Title, &j.Description, &j.IsActive,
+			&j.StartedAt, &j.EndedAt, &j.CreatedAt, &j.UpdatedAt,
+			&stats.CheckpointCount, &stats.TotalXP); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get journey: %w", err)
+	}
+
+	// Distance still requires a spatial aggregate.
+	if err := r.db.QueryRow(ctx,
+		`SELECT COALESCE(ST_Length(ST_MakeLine(location::geometry ORDER BY created_at)::geography) / 1000, 0)
 		 FROM checkpoints WHERE journey_id = $1 AND deleted_at IS NULL`, id).
-		Scan(&stats.CheckpointCount, &stats.TotalXP, &stats.DistanceKm); err != nil {
-		return nil, fmt.Errorf("journey stats: %w", err)
+		Scan(&stats.DistanceKm); err != nil {
+		return nil, fmt.Errorf("journey distance: %w", err)
 	}
 
 	rows, err := r.db.Query(ctx,
-		`SELECT c.id, c.name, c.category, c.note, c.address, c.lat, c.lng, c.place_id, c.created_at,
-		        COALESCE((
-		          SELECT array_agg(ci.object_key ORDER BY ci.sort_order, ci.created_at)
-		          FROM checkpoint_images ci WHERE ci.checkpoint_id = c.id
-		        ), '{}'),
-		        COALESCE((
-		          SELECT array_agg(COALESCE(ci.thumbnail_key, ci.object_key) ORDER BY ci.sort_order, ci.created_at)
-		          FROM checkpoint_images ci WHERE ci.checkpoint_id = c.id
-		        ), '{}')
+		`SELECT c.id, c.name, c.category, c.note, c.address, c.lat, c.lng,
+		        c.place_id, c.created_at, c.image_key, c.thumbnail_key
 		 FROM checkpoints c
 		 WHERE c.journey_id = $1 AND c.deleted_at IS NULL ORDER BY c.created_at`, id)
 	if err != nil {
@@ -233,21 +234,23 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 	stops := []Stop{}
 	for rows.Next() {
 		var s Stop
-		var keys, thumbnailKeys []string
+		var imageKey, thumbnailKey *string
 		if err := rows.Scan(&s.ID, &s.Name, &s.Category, &s.Note, &s.Address,
-			&s.Lat, &s.Lng, &s.PlaceID, &s.CreatedAt, &keys, &thumbnailKeys); err != nil {
+			&s.Lat, &s.Lng, &s.PlaceID, &s.CreatedAt, &imageKey, &thumbnailKey); err != nil {
 			return nil, fmt.Errorf("scan stop: %w", err)
 		}
-		s.Images = make([]string, 0, len(keys))
-		s.ThumbnailImages = make([]string, 0, len(keys))
-		for i, k := range keys {
-			s.Images = append(s.Images, storage.PublicURL(r.mediaBase, k))
-			s.ThumbnailImages = append(s.ThumbnailImages, storage.PublicURL(r.mediaBase, thumbnailKeys[i]))
+		if imageKey != nil {
+			u := storage.PublicURL(r.mediaBase, *imageKey)
+			s.ImageURL = &u
+		}
+		if thumbnailKey != nil {
+			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
+			s.ThumbnailURL = &u
 		}
 		stops = append(stops, s)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return &Detail{Journey: j, Stats: stats, Checkpoints: stops}, nil
+	return &Detail{Journey: &j, Stats: stats, Checkpoints: stops}, nil
 }

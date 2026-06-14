@@ -219,10 +219,7 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 		`SELECT c.id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
 		        c.place_id, c.xp_awarded, c.created_at,
 		        u.username, u.display_name, u.avatar_key,
-		        (SELECT object_key FROM checkpoint_images ci
-		         WHERE ci.checkpoint_id = c.id ORDER BY sort_order, created_at LIMIT 1),
-		        (SELECT COALESCE(thumbnail_key, object_key) FROM checkpoint_images ci
-		         WHERE ci.checkpoint_id = c.id ORDER BY sort_order, created_at LIMIT 1),
+		        c.image_key, c.thumbnail_key,
 		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
 		 FROM checkpoints c JOIN users u ON u.id = c.user_id
 		 WHERE c.deleted_at IS NULL

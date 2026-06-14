@@ -49,6 +49,9 @@ func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver, xp 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
 	place_id, journey_id, xp_awarded, created_at, updated_at`
 
+// cpListColumns extends cpColumns with denormalized cover image fields.
+const cpListColumns = cpColumns + `, image_key, thumbnail_key`
+
 func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 	var c Checkpoint
 	err := row.Scan(
@@ -121,6 +124,15 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		return nil, fmt.Errorf("insert images: %w", err)
 	}
 
+	if p.JourneyID != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE journeys SET checkpoint_count = checkpoint_count + 1, total_xp = total_xp + $2
+			 WHERE id = $1`,
+			p.JourneyID, p.XPReward); err != nil {
+			return nil, fmt.Errorf("bump journey stats: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
@@ -129,7 +141,7 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}, nil
 }
 
-// insertImagesTx inserts checkpoint_images rows inside an existing transaction.
+// insertImagesTx inserts checkpoint_images rows and updates denormalized cover fields.
 func insertImagesTx(ctx context.Context, tx pgx.Tx, checkpointID string, keys []ImageKeys) error {
 	for i, key := range keys {
 		if _, err := tx.Exec(ctx,
@@ -137,6 +149,17 @@ func insertImagesTx(ctx context.Context, tx pgx.Tx, checkpointID string, keys []
 			 VALUES ($1, $2, $3, $4)`,
 			checkpointID, key.ObjectKey, key.ThumbnailKey, i); err != nil {
 			return fmt.Errorf("insert image row: %w", err)
+		}
+	}
+	if len(keys) > 0 {
+		coverThumb := keys[0].ObjectKey
+		if keys[0].ThumbnailKey != nil {
+			coverThumb = *keys[0].ThumbnailKey
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE checkpoints SET image_key = $2, thumbnail_key = $3 WHERE id = $1 AND image_key IS NULL`,
+			checkpointID, keys[0].ObjectKey, coverThumb); err != nil {
+			return fmt.Errorf("set cover key: %w", err)
 		}
 	}
 	return nil
@@ -155,30 +178,58 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Checkpoint, error
 	return c, nil
 }
 
-// ListByUser returns a user's checkpoints (newest first), each with its first
-// photo URL (for the profile gallery).
+// ListByUser returns a user's checkpoints (newest first) with cover image URLs.
 func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT `+cpColumns+`,
-		        (SELECT object_key FROM checkpoint_images ci
-		         WHERE ci.checkpoint_id = c.id ORDER BY ci.sort_order, ci.created_at LIMIT 1),
-		        (SELECT COALESCE(thumbnail_key, object_key) FROM checkpoint_images ci
-		         WHERE ci.checkpoint_id = c.id ORDER BY ci.sort_order, ci.created_at LIMIT 1)
-		 FROM checkpoints c
-		 WHERE c.user_id = $1 AND c.deleted_at IS NULL
-		 ORDER BY c.created_at DESC LIMIT $2`, userID, limit)
+		`SELECT `+cpListColumns+` FROM checkpoints
+		 WHERE user_id = $1 AND deleted_at IS NULL
+		 ORDER BY created_at DESC LIMIT $2`, userID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoints: %w", err)
 	}
-	defer rows.Close()
+	return r.collectCheckpoints(rows)
+}
 
+// ListInBounds returns checkpoints whose location falls inside the given
+// bounding box (for the map viewport). Uses the GIST index via the && operator.
+func (r *Repository) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+cpListColumns+` FROM checkpoints
+		 WHERE deleted_at IS NULL
+		   AND location && ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography
+		 ORDER BY created_at DESC LIMIT $5`,
+		minLng, minLat, maxLng, maxLat, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list checkpoints in bounds: %w", err)
+	}
+	return r.collectCheckpoints(rows)
+}
+
+// ListNearby returns checkpoints within radiusM metres of (lng, lat), nearest
+// first (ST_DWithin + KNN ordering, both index-backed).
+func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, radiusM float64, limit int) ([]*Checkpoint, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+cpListColumns+` FROM checkpoints
+		 WHERE deleted_at IS NULL
+		   AND ST_DWithin(location, ST_MakePoint($1, $2)::geography, $3)
+		 ORDER BY location <-> ST_MakePoint($1, $2)::geography LIMIT $4`,
+		lng, lat, radiusM, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list nearby checkpoints: %w", err)
+	}
+	return r.collectCheckpoints(rows)
+}
+
+func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
+	defer rows.Close()
 	var out []*Checkpoint
 	for rows.Next() {
 		var c Checkpoint
 		var imageKey, thumbnailKey *string
 		if err := rows.Scan(
 			&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt, &imageKey, &thumbnailKey,
+			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
+			&imageKey, &thumbnailKey,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint: %w", err)
 		}
@@ -191,49 +242,6 @@ func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) (
 			c.ThumbnailURL = &u
 		}
 		out = append(out, &c)
-	}
-	return out, rows.Err()
-}
-
-// ListInBounds returns checkpoints whose location falls inside the given
-// bounding box (for the map viewport). Uses the GIST index via the && operator.
-func (r *Repository) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT `+cpColumns+` FROM checkpoints
-		 WHERE deleted_at IS NULL
-		   AND location && ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography
-		 ORDER BY created_at DESC LIMIT $5`,
-		minLng, minLat, maxLng, maxLat, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list checkpoints in bounds: %w", err)
-	}
-	return collectCheckpoints(rows)
-}
-
-// ListNearby returns checkpoints within radiusM metres of (lng, lat), nearest
-// first (ST_DWithin + KNN ordering, both index-backed).
-func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, radiusM float64, limit int) ([]*Checkpoint, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT `+cpColumns+` FROM checkpoints
-		 WHERE deleted_at IS NULL
-		   AND ST_DWithin(location, ST_MakePoint($1, $2)::geography, $3)
-		 ORDER BY location <-> ST_MakePoint($1, $2)::geography LIMIT $4`,
-		lng, lat, radiusM, limit)
-	if err != nil {
-		return nil, fmt.Errorf("list nearby checkpoints: %w", err)
-	}
-	return collectCheckpoints(rows)
-}
-
-func collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
-	defer rows.Close()
-	var out []*Checkpoint
-	for rows.Next() {
-		c, err := scanCheckpoint(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan checkpoint: %w", err)
-		}
-		out = append(out, c)
 	}
 	return out, rows.Err()
 }
@@ -289,7 +297,7 @@ func (r *Repository) ListImages(ctx context.Context, checkpointID string) ([]Ima
 }
 
 // AddImages inserts image rows (by object key) for a checkpoint and returns them
-// with full public URLs.
+// with full public URLs. Also maintains the denormalized cover fields.
 func (r *Repository) AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error) {
 	out := make([]Image, 0, len(keys))
 	for i, key := range keys {
@@ -309,6 +317,18 @@ func (r *Repository) AddImages(ctx context.Context, checkpointID string, keys []
 		}
 		img.ThumbnailURL = &thumbnailURL
 		out = append(out, img)
+	}
+	// Set denorm cover if not already populated (only first image matters)
+	if len(keys) > 0 && startOrder == 0 {
+		coverThumb := keys[0].ObjectKey
+		if keys[0].ThumbnailKey != nil {
+			coverThumb = *keys[0].ThumbnailKey
+		}
+		if _, err := r.db.Exec(ctx,
+			`UPDATE checkpoints SET image_key = $2, thumbnail_key = $3 WHERE id = $1 AND image_key IS NULL`,
+			checkpointID, keys[0].ObjectKey, coverThumb); err != nil {
+			return nil, fmt.Errorf("set cover key: %w", err)
+		}
 	}
 	return out, nil
 }
@@ -362,12 +382,12 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 	// no SELECT FOR UPDATE needed. A concurrent delete of the same row blocks
 	// on the implicit write lock until this tx commits, then sees 0 rows and
 	// gets ErrNotFound; double XP reversal is impossible.
-	var placeID *string
+	var placeID, journeyID *string
 	var xpAwarded int
 	err = tx.QueryRow(ctx,
 		`DELETE FROM checkpoints WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		 RETURNING place_id, xp_awarded`,
-		id, userID).Scan(&placeID, &xpAwarded)
+		 RETURNING place_id, xp_awarded, journey_id`,
+		id, userID).Scan(&placeID, &xpAwarded, &journeyID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -383,6 +403,15 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 		`UPDATE users SET checkpoint_count = GREATEST(checkpoint_count - 1, 0), updated_at = NOW()
 		 WHERE id = $1`, userID); err != nil {
 		return nil, fmt.Errorf("drop checkpoint_count: %w", err)
+	}
+
+	if journeyID != nil {
+		if _, err := tx.Exec(ctx,
+			`UPDATE journeys SET checkpoint_count = GREATEST(checkpoint_count - 1, 0),
+			                     total_xp = GREATEST(total_xp - $2, 0)
+			 WHERE id = $1`, journeyID, xpAwarded); err != nil {
+			return nil, fmt.Errorf("decrement journey stats: %w", err)
+		}
 	}
 
 	// Un-count the place; if no checkpoint references it anymore it's orphaned —

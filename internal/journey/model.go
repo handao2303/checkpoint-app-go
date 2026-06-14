@@ -29,20 +29,19 @@ type UpdateInput struct {
 	IsActive    *bool   `json:"is_active"`
 }
 
-// Stop is a checkpoint that belongs to a journey (timeline + map point), with
-// its own photos shown on the map marker. Phase 3 J2.
+// Stop is a checkpoint that belongs to a journey (timeline + map point).
 type Stop struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Category        string    `json:"category"`
-	Note            *string   `json:"note,omitempty"`
-	Address         *string   `json:"address,omitempty"`
-	Lat             float64   `json:"lat"`
-	Lng             float64   `json:"lng"`
-	PlaceID         *string   `json:"place_id,omitempty"`
-	Images          []string  `json:"images"`
-	ThumbnailImages []string  `json:"thumbnail_images"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Category     string    `json:"category"`
+	Note         *string   `json:"note,omitempty"`
+	Address      *string   `json:"address,omitempty"`
+	Lat          float64   `json:"lat"`
+	Lng          float64   `json:"lng"`
+	PlaceID      *string   `json:"place_id,omitempty"`
+	ImageURL     *string   `json:"image_url,omitempty"`
+	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // Stats are aggregated figures for a journey (J2).
