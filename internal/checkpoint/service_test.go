@@ -52,6 +52,7 @@ func (f *fakeRepo) CountImages(context.Context, string) (int, error) { return 0,
 func (f *fakeRepo) Delete(context.Context, string, string) ([]string, error) {
 	return f.deleteKeys, f.deleteErr
 }
+func (f *fakeRepo) IncrementView(context.Context, string) (int, error) { return 0, nil }
 
 // fakeStorage records deleted keys (uploads are unused in these tests).
 type fakeStorage struct {

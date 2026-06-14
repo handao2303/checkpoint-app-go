@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/quanluon/checkpoint-app/internal/gamification"
 	"github.com/quanluon/checkpoint-app/internal/place"
@@ -34,29 +36,36 @@ type gamificationTx interface {
 // Repository is the Postgres data layer for checkpoints.
 type Repository struct {
 	db        *pgxpool.Pool
-	mediaBase string // R2 public base URL, prepended to image keys on read
+	mediaBase string        // R2 public base URL, prepended to image keys on read
 	places    placeResolver
 	xp        gamificationTx
+	redis     *redis.Client // optional hot counter for view_count; nil disables it
 }
 
 // NewRepository builds a checkpoint repository over a pgx pool. mediaBase is the
 // public base URL for image keys; places resolves a check-in to a Place; xp
-// applies the XP award, event log, and badge evaluation within the check-in tx.
-func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver, xp gamificationTx) *Repository {
-	return &Repository{db: db, mediaBase: mediaBase, places: places, xp: xp}
+// applies the XP award, event log, and badge evaluation within the check-in tx;
+// redis (may be nil) is the hot view counter.
+func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver, xp gamificationTx, redisClient *redis.Client) *Repository {
+	return &Repository{db: db, mediaBase: mediaBase, places: places, xp: xp, redis: redisClient}
 }
 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
-	place_id, journey_id, xp_awarded, created_at, updated_at`
+	place_id, journey_id, xp_awarded, view_count, created_at, updated_at`
 
 // cpListColumns extends cpColumns with denormalized cover image fields.
 const cpListColumns = cpColumns + `, image_key, thumbnail_key`
+
+// viewTTL keeps a checkpoint's hot view counter warm in Redis.
+const viewTTL = 7 * 24 * time.Hour
+
+func viewKey(id string) string { return "views:" + id }
 
 func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 	var c Checkpoint
 	err := row.Scan(
 		&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-		&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
+		&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.CreatedAt, &c.UpdatedAt,
 	)
 	return &c, err
 }
@@ -228,7 +237,7 @@ func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
 		var imageKey, thumbnailKey *string
 		if err := rows.Scan(
 			&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.CreatedAt, &c.UpdatedAt,
+			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.CreatedAt, &c.UpdatedAt,
 			&imageKey, &thumbnailKey,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint: %w", err)
@@ -251,6 +260,14 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 	cp, err := r.GetByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+
+	// Overlay the hot Redis counter when present — it leads the lazily-persisted
+	// DB column.
+	if r.redis != nil {
+		if n, rerr := r.redis.Get(ctx, viewKey(id)).Int(); rerr == nil {
+			cp.ViewCount = n
+		}
 	}
 
 	var author Author
@@ -434,4 +451,55 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 		return nil, fmt.Errorf("commit delete: %w", err)
 	}
 	return imageKeys, nil
+}
+
+// IncrementView bumps a checkpoint's view count and returns the new total.
+// Redis is the hot counter (seeded from the DB on a miss); the DB column is
+// updated lazily in the background so it survives a cache flush. When Redis is
+// unavailable it falls back to a synchronous DB increment.
+func (r *Repository) IncrementView(ctx context.Context, id string) (int, error) {
+	if r.redis != nil {
+		key := viewKey(id)
+		// Seed the counter from the DB the first time we see this checkpoint, so
+		// the Redis value reflects the real historical total rather than starting
+		// at 1.
+		if exists, err := r.redis.Exists(ctx, key).Result(); err == nil && exists == 0 {
+			var base int
+			derr := r.db.QueryRow(ctx,
+				`SELECT view_count FROM checkpoints WHERE id = $1 AND deleted_at IS NULL`, id).Scan(&base)
+			if errors.Is(derr, pgx.ErrNoRows) {
+				return 0, ErrNotFound
+			}
+			if derr != nil {
+				return 0, fmt.Errorf("seed view count: %w", derr)
+			}
+			r.redis.SetNX(ctx, key, base, viewTTL)
+		}
+		if n, err := r.redis.Incr(ctx, key).Result(); err == nil {
+			r.redis.Expire(ctx, key, viewTTL)
+			total := int(n)
+			// Persist toward the truth without blocking the request. GREATEST keeps
+			// the column monotonic even if writes arrive out of order.
+			go func() {
+				bg, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_, _ = r.db.Exec(bg,
+					`UPDATE checkpoints SET view_count = GREATEST(view_count, $2) WHERE id = $1`, id, total)
+			}()
+			return total, nil
+		}
+	}
+
+	// Redis unavailable → increment the DB directly.
+	var count int
+	err := r.db.QueryRow(ctx,
+		`UPDATE checkpoints SET view_count = view_count + 1 WHERE id = $1 AND deleted_at IS NULL
+		 RETURNING view_count`, id).Scan(&count)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("increment view count: %w", err)
+	}
+	return count, nil
 }

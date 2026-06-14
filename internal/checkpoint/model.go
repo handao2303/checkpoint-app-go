@@ -22,6 +22,7 @@ type Checkpoint struct {
 	ImageURL     *string   `json:"image_url,omitempty"` // first photo (populated in list)
 	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
 	XPAwarded    int       `json:"xp_awarded"`
+	ViewCount    int       `json:"view_count"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

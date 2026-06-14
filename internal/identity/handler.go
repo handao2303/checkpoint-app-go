@@ -36,7 +36,11 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
 		r.Get("/me", h.GetMe)
 		r.Patch("/me", h.UpdateProfile)
 		r.Post("/me/avatar", h.UploadAvatar)
+		// Static /following must precede /{username} so it isn't read as a username.
+		r.Get("/following", h.GetFollowing)
 		r.Get("/{username}", h.GetByUsername)
+		r.Post("/{username}/follow", h.Follow)
+		r.Delete("/{username}/follow", h.Unfollow)
 	})
 }
 
@@ -164,6 +168,47 @@ func (h *Handler) GetByUsername(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, user)
+}
+
+// GetFollowing returns the ids of users the caller follows.
+func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	ids, err := h.svc.GetFolloweeIDs(r.Context(), p.UserID)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not load following")
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"ids": ids})
+}
+
+// Follow makes the caller follow {username}.
+func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	err := h.svc.Follow(r.Context(), p.UserID, chi.URLParam(r, "username"))
+	switch {
+	case err == nil:
+		respond.JSON(w, http.StatusNoContent, nil)
+	case errors.Is(err, ErrUserNotFound):
+		respond.Error(w, http.StatusNotFound, "user not found")
+	case errors.Is(err, ErrSelfFollow):
+		respond.Error(w, http.StatusBadRequest, "cannot follow yourself")
+	default:
+		respond.Error(w, http.StatusInternalServerError, "could not follow")
+	}
+}
+
+// Unfollow makes the caller stop following {username}.
+func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	err := h.svc.Unfollow(r.Context(), p.UserID, chi.URLParam(r, "username"))
+	switch {
+	case err == nil:
+		respond.JSON(w, http.StatusNoContent, nil)
+	case errors.Is(err, ErrUserNotFound):
+		respond.Error(w, http.StatusNotFound, "user not found")
+	default:
+		respond.Error(w, http.StatusInternalServerError, "could not unfollow")
+	}
 }
 
 func decodeJSON(r *http.Request, dst any) error {

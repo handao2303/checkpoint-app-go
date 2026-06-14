@@ -41,6 +41,7 @@ type repository interface {
 	AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error)
 	CountImages(ctx context.Context, checkpointID string) (int, error)
 	Delete(ctx context.Context, id, userID string) (imageKeys []string, err error)
+	IncrementView(ctx context.Context, id string) (int, error)
 }
 
 // fileStorage stores and removes image objects.
@@ -166,6 +167,11 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 // GetDetail returns a checkpoint with images and author.
 func (s *Service) GetDetail(ctx context.Context, id string) (*Detail, error) {
 	return s.repo.GetDetail(ctx, id)
+}
+
+// IncrementView records one view of a checkpoint and returns the new total.
+func (s *Service) IncrementView(ctx context.Context, id string) (int, error) {
+	return s.repo.IncrementView(ctx, id)
 }
 
 // ListInBounds returns checkpoints inside a map viewport bounding box.

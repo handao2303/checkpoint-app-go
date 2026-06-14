@@ -71,7 +71,7 @@ func run() error {
 		return fmt.Errorf("supabase verifier: %w", err)
 	}
 	r2 := storage.NewR2(cfg.r2)
-	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL), tokens, verifier, r2)
+	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL, redisClient), tokens, verifier, r2)
 	identityHandler := identity.NewHandler(identitySvc)
 
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
@@ -81,7 +81,7 @@ func run() error {
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
 	checkpointHandler := checkpoint.NewHandler(
-		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo), r2, journeyRepo))
+		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient), r2, journeyRepo))
 	googlePlacesHandler := locationiq.NewHandler(locationiq.NewClient(cfg.placesAPIKey))
 
 	corsOpts := cors.Options{

@@ -38,6 +38,7 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler, c
 		// "upload-slots" as a checkpoint ID.
 		r.Post("/upload-slots", h.PrepareSlots)
 		r.Get("/{id}", h.Get)
+		r.Post("/{id}/view", h.View)
 		r.Post("/{id}/images", h.UploadImages)
 		r.Post("/{id}/upload-urls", h.GetUploadURLs)
 		r.Post("/{id}/images/link", h.LinkImages)
@@ -189,6 +190,20 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, detail)
+}
+
+// View records one view of a checkpoint and returns the new total.
+func (h *Handler) View(w http.ResponseWriter, r *http.Request) {
+	count, err := h.svc.IncrementView(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			respond.Error(w, http.StatusNotFound, "checkpoint not found")
+			return
+		}
+		respond.Error(w, http.StatusInternalServerError, "could not record view")
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"view_count": count})
 }
 
 // UploadImages attaches multipart "images" files to a checkpoint the caller owns.

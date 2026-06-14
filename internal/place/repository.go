@@ -201,44 +201,33 @@ func (r *Repository) Popular(ctx context.Context, near *Point, radiusM float64, 
 	return collectPlaces(rows)
 }
 
-// Feed returns community check-ins ordered newest → oldest,
-// keyset-paginated on (created_at, id). cursor = "<unix_microseconds>:<id>" of the
-// previous page's last item ("" for the first page). No radius limit.
-func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error) {
-	var cursorTime *time.Time
-	var cursorID *string
+// feedSelect is the column list shared by Feed and FeedFollowing (distance is
+// appended by each query as it parameterizes the reference point differently).
+const feedSelect = `c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
+	c.place_id, c.xp_awarded, c.created_at,
+	u.username, u.display_name, u.avatar_key,
+	c.image_key, c.thumbnail_key`
+
+// parseFeedCursor decodes a "<unix_microseconds>:<id>" keyset cursor.
+func parseFeedCursor(cursor string) (*time.Time, *string) {
 	if parts := strings.SplitN(cursor, ":", 2); cursor != "" && len(parts) == 2 {
 		if us, err := strconv.ParseInt(parts[0], 10, 64); err == nil {
 			t := time.UnixMicro(us).UTC()
-			cursorTime = &t
-			cursorID = &parts[1]
+			return &t, &parts[1]
 		}
 	}
+	return nil, nil
+}
 
-	rows, err := r.db.Query(ctx,
-		`SELECT c.id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
-		        c.place_id, c.xp_awarded, c.created_at,
-		        u.username, u.display_name, u.avatar_key,
-		        c.image_key, c.thumbnail_key,
-		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
-		 FROM checkpoints c JOIN users u ON u.id = c.user_id
-		 WHERE c.deleted_at IS NULL
-		   AND ($3::timestamptz IS NULL
-		        OR c.created_at < $3
-		        OR (c.created_at = $3 AND c.id < $4::uuid))
-		 ORDER BY c.created_at DESC, c.id DESC LIMIT $5`,
-		lng, lat, cursorTime, cursorID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("feed: %w", err)
-	}
+// scanFeedRows materializes feed rows (feedSelect + a trailing dist column).
+func (r *Repository) scanFeedRows(rows pgx.Rows, limit int) (*Feed, error) {
 	defer rows.Close()
-
 	items := make([]FeedItem, 0, limit)
 	for rows.Next() {
 		var it FeedItem
 		var avatarKey, imageKey, thumbnailKey *string
 		if err := rows.Scan(
-			&it.ID, &it.Name, &it.Category, &it.Note, &it.Rating, &it.Lat, &it.Lng, &it.Address,
+			&it.ID, &it.UserID, &it.Name, &it.Category, &it.Note, &it.Rating, &it.Lat, &it.Lng, &it.Address,
 			&it.PlaceID, &it.XPAwarded, &it.CreatedAt,
 			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &thumbnailKey, &it.DistanceM,
 		); err != nil {
@@ -269,6 +258,48 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 		feed.NextCursor = &next
 	}
 	return feed, nil
+}
+
+// Feed returns community check-ins ordered newest → oldest,
+// keyset-paginated on (created_at, id). cursor = "<unix_microseconds>:<id>" of the
+// previous page's last item ("" for the first page). No radius limit.
+func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error) {
+	cursorTime, cursorID := parseFeedCursor(cursor)
+	rows, err := r.db.Query(ctx,
+		`SELECT `+feedSelect+`,
+		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+		 FROM checkpoints c JOIN users u ON u.id = c.user_id
+		 WHERE c.deleted_at IS NULL
+		   AND ($3::timestamptz IS NULL
+		        OR c.created_at < $3
+		        OR (c.created_at = $3 AND c.id < $4::uuid))
+		 ORDER BY c.created_at DESC, c.id DESC LIMIT $5`,
+		lng, lat, cursorTime, cursorID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("feed: %w", err)
+	}
+	return r.scanFeedRows(rows, limit)
+}
+
+// FeedFollowing is Feed restricted to check-ins authored by users that
+// followerID follows.
+func (r *Repository) FeedFollowing(ctx context.Context, followerID string, lng, lat float64, cursor string, limit int) (*Feed, error) {
+	cursorTime, cursorID := parseFeedCursor(cursor)
+	rows, err := r.db.Query(ctx,
+		`SELECT `+feedSelect+`,
+		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+		 FROM checkpoints c JOIN users u ON u.id = c.user_id
+		 WHERE c.deleted_at IS NULL
+		   AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $6)
+		   AND ($3::timestamptz IS NULL
+		        OR c.created_at < $3
+		        OR (c.created_at = $3 AND c.id < $4::uuid))
+		 ORDER BY c.created_at DESC, c.id DESC LIMIT $5`,
+		lng, lat, cursorTime, cursorID, limit, followerID)
+	if err != nil {
+		return nil, fmt.Errorf("feed following: %w", err)
+	}
+	return r.scanFeedRows(rows, limit)
 }
 
 func (r *Repository) recentReviews(ctx context.Context, placeID string, limit int) ([]Review, error) {

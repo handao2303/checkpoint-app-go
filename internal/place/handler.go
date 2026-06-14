@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/quanluon/checkpoint-app/pkg/authctx"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 )
 
@@ -30,6 +31,7 @@ func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
 		r.Get("/{id}", h.Get)
 	})
 	r.With(auth).Get("/discover/feed", h.Feed)
+	r.With(auth).Get("/discover/feed/following", h.FeedFollowing)
 }
 
 // Popular returns top places by check-ins (?lat&lng&limit).
@@ -61,6 +63,25 @@ func (h *Handler) Feed(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	feed, err := h.svc.Feed(r.Context(), lat, lng, q.Get("cursor"), limit)
+	if err != nil {
+		h.listError(w, err)
+		return
+	}
+	respond.JSON(w, http.StatusOK, feed)
+}
+
+// FeedFollowing returns the caller's following-only feed (?lat&lng&cursor&limit).
+func (h *Handler) FeedFollowing(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	q := r.URL.Query()
+	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
+	lng, errLng := strconv.ParseFloat(q.Get("lng"), 64)
+	if errLat != nil || errLng != nil {
+		respond.Error(w, http.StatusBadRequest, "lat and lng are required numbers")
+		return
+	}
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	feed, err := h.svc.FeedFollowing(r.Context(), p.UserID, lat, lng, q.Get("cursor"), limit)
 	if err != nil {
 		h.listError(w, err)
 		return

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/quanluon/checkpoint-app/internal/gamification"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
@@ -23,14 +24,21 @@ var (
 // Repository is the Postgres-backed data layer for the identity domain.
 type Repository struct {
 	db        *pgxpool.Pool
-	mediaBase string // R2 public base URL, prepended to avatar keys on read
+	mediaBase string        // R2 public base URL, prepended to avatar keys on read
+	redis     *redis.Client // optional cache for the following list; nil disables it
 }
 
 // NewRepository builds a Repository over a pgx pool. mediaBase is the public
-// base URL used to turn stored avatar keys into full URLs.
-func NewRepository(db *pgxpool.Pool, mediaBase string) *Repository {
-	return &Repository{db: db, mediaBase: mediaBase}
+// base URL used to turn stored avatar keys into full URLs. redis (may be nil)
+// caches each user's following list.
+func NewRepository(db *pgxpool.Pool, mediaBase string, redisClient *redis.Client) *Repository {
+	return &Repository{db: db, mediaBase: mediaBase, redis: redisClient}
 }
+
+// followingTTL is how long a cached following set lives before re-reading the DB.
+const followingTTL = 24 * time.Hour
+
+func followingKey(followerID string) string { return "following:" + followerID }
 
 const userColumns = `id, supabase_id, email, username, display_name, avatar_key, bio,
 	role, is_anonymous, total_xp, level, checkpoint_count, journey_count, created_at, updated_at`
@@ -175,6 +183,75 @@ func (r *Repository) RevokeRefreshToken(ctx context.Context, hash string) error 
 		return fmt.Errorf("revoke refresh token: %w", err)
 	}
 	return nil
+}
+
+// Follow records that followerID follows followeeID (idempotent). On success the
+// follower's cached following set is invalidated so the next read reloads it.
+func (r *Repository) Follow(ctx context.Context, followerID, followeeID string) error {
+	if _, err := r.db.Exec(ctx,
+		`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+		followerID, followeeID); err != nil {
+		return fmt.Errorf("follow: %w", err)
+	}
+	r.invalidateFollowing(ctx, followerID)
+	return nil
+}
+
+// Unfollow removes a follow edge (no-op if absent) and invalidates the cache.
+func (r *Repository) Unfollow(ctx context.Context, followerID, followeeID string) error {
+	if _, err := r.db.Exec(ctx,
+		`DELETE FROM follows WHERE follower_id = $1 AND followee_id = $2`,
+		followerID, followeeID); err != nil {
+		return fmt.Errorf("unfollow: %w", err)
+	}
+	r.invalidateFollowing(ctx, followerID)
+	return nil
+}
+
+// GetFolloweeIDs returns the ids of users that followerID follows. Reads from
+// Redis when warm; on a miss it queries the DB and repopulates the cache.
+func (r *Repository) GetFolloweeIDs(ctx context.Context, followerID string) ([]string, error) {
+	if r.redis != nil {
+		if ids, err := r.redis.SMembers(ctx, followingKey(followerID)).Result(); err == nil && len(ids) > 0 {
+			return ids, nil
+		}
+	}
+
+	rows, err := r.db.Query(ctx,
+		`SELECT followee_id FROM follows WHERE follower_id = $1 ORDER BY created_at DESC`, followerID)
+	if err != nil {
+		return nil, fmt.Errorf("get followee ids: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan followee id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Best-effort repopulate. Empty sets are left uncached (cheap to recompute).
+	if r.redis != nil && len(ids) > 0 {
+		members := make([]any, len(ids))
+		for i, id := range ids {
+			members[i] = id
+		}
+		if err := r.redis.SAdd(ctx, followingKey(followerID), members...).Err(); err == nil {
+			r.redis.Expire(ctx, followingKey(followerID), followingTTL)
+		}
+	}
+	return ids, nil
+}
+
+func (r *Repository) invalidateFollowing(ctx context.Context, followerID string) {
+	if r.redis != nil {
+		_ = r.redis.Del(ctx, followingKey(followerID)).Err()
+	}
 }
 
 // isUniqueViolation reports whether err is a Postgres unique-constraint error.

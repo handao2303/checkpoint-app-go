@@ -33,6 +33,7 @@ type readRepository interface {
 	GetDetail(ctx context.Context, id string) (*Detail, error)
 	Popular(ctx context.Context, near *Point, radiusM float64, limit int) ([]*Place, error)
 	Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error)
+	FeedFollowing(ctx context.Context, followerID string, lng, lat float64, cursor string, limit int) (*Feed, error)
 }
 
 // Service holds the place (discovery) read logic.
@@ -91,6 +92,14 @@ func (s *Service) Feed(ctx context.Context, lat, lng float64, cursor string, lim
 		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
 	}
 	return s.repo.Feed(ctx, lng, lat, cursor, clampLimit(limit))
+}
+
+// FeedFollowing returns the feed restricted to users the caller follows.
+func (s *Service) FeedFollowing(ctx context.Context, followerID string, lat, lng float64, cursor string, limit int) (*Feed, error) {
+	if lat < -90 || lat > 90 || lng < -180 || lng > 180 {
+		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
+	}
+	return s.repo.FeedFollowing(ctx, followerID, lng, lat, cursor, clampLimit(limit))
 }
 
 // Popular returns top places by check-in count, cached (TTL) and single-flighted

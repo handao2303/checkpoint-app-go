@@ -15,6 +15,7 @@ import (
 var (
 	ErrUnauthorized    = errors.New("unauthorized")
 	ErrUnsupportedFile = errors.New("unsupported file type")
+	ErrSelfFollow      = errors.New("cannot follow yourself")
 )
 
 // repository is the data layer the service depends on (defined here, on the
@@ -30,6 +31,9 @@ type repository interface {
 	CreateRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
 	GetRefreshToken(ctx context.Context, hash string) (*RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, hash string) error
+	Follow(ctx context.Context, followerID, followeeID string) error
+	Unfollow(ctx context.Context, followerID, followeeID string) error
+	GetFolloweeIDs(ctx context.Context, followerID string) ([]string, error)
 }
 
 // supabaseVerifier verifies Supabase tokens during /auth/exchange.
@@ -114,6 +118,33 @@ func (s *Service) GetByID(ctx context.Context, id string) (*User, error) {
 // GetByUsername returns a public profile by username.
 func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {
 	return s.repo.GetByUsername(ctx, username)
+}
+
+// Follow makes followerID follow the user with followeeUsername. Returns
+// ErrUserNotFound if the target doesn't exist, ErrSelfFollow on self-follow.
+func (s *Service) Follow(ctx context.Context, followerID, followeeUsername string) error {
+	followee, err := s.repo.GetByUsername(ctx, followeeUsername)
+	if err != nil {
+		return err
+	}
+	if followee.ID == followerID {
+		return ErrSelfFollow
+	}
+	return s.repo.Follow(ctx, followerID, followee.ID)
+}
+
+// Unfollow removes the follow edge from followerID to followeeUsername.
+func (s *Service) Unfollow(ctx context.Context, followerID, followeeUsername string) error {
+	followee, err := s.repo.GetByUsername(ctx, followeeUsername)
+	if err != nil {
+		return err
+	}
+	return s.repo.Unfollow(ctx, followerID, followee.ID)
+}
+
+// GetFolloweeIDs returns the ids of users the caller follows.
+func (s *Service) GetFolloweeIDs(ctx context.Context, followerID string) ([]string, error) {
+	return s.repo.GetFolloweeIDs(ctx, followerID)
 }
 
 // UpdateProfile updates the caller's display name and/or bio.
