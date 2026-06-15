@@ -36,7 +36,7 @@ type gamificationTx interface {
 // Repository is the Postgres data layer for checkpoints.
 type Repository struct {
 	db        *pgxpool.Pool
-	mediaBase string        // R2 public base URL, prepended to image keys on read
+	mediaBase string // R2 public base URL, prepended to image keys on read
 	places    placeResolver
 	xp        gamificationTx
 	redis     *redis.Client // optional hot counter for view_count; nil disables it
@@ -257,35 +257,69 @@ func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
 
 // GetDetail returns a checkpoint with its author (joined from users) and images.
 func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) {
-	cp, err := r.GetByID(ctx, id)
+	rows, err := r.db.Query(ctx,
+		`SELECT c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
+		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.created_at, c.updated_at,
+		        u.username, u.display_name, u.avatar_key,
+		        ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key), ci.sort_order
+		 FROM checkpoints c
+		 JOIN users u ON u.id = c.user_id
+		 LEFT JOIN checkpoint_images ci ON ci.checkpoint_id = c.id
+		 WHERE c.id = $1 AND c.deleted_at IS NULL
+		 ORDER BY ci.sort_order, ci.created_at`, id)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("get checkpoint detail: %w", err)
+	}
+	defer rows.Close()
+
+	var detail Detail
+	for rows.Next() {
+		var cp Checkpoint
+		var author Author
+		var imageID, objectKey, thumbnailKey *string
+		var sortOrder *int
+		if err := rows.Scan(
+			&cp.ID, &cp.UserID, &cp.Name, &cp.Category, &cp.Note, &cp.Rating, &cp.Lat, &cp.Lng,
+			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.CreatedAt, &cp.UpdatedAt,
+			&author.Username, &author.DisplayName, &author.AvatarURL,
+			&imageID, &objectKey, &thumbnailKey, &sortOrder,
+		); err != nil {
+			return nil, fmt.Errorf("scan checkpoint detail: %w", err)
+		}
+
+		if detail.Checkpoint == nil {
+			if author.AvatarURL != nil {
+				url := storage.PublicURL(r.mediaBase, *author.AvatarURL)
+				author.AvatarURL = &url
+			}
+			detail.Checkpoint = &cp
+			detail.Author = &author
+		}
+
+		if imageID != nil {
+			img := Image{ID: *imageID, URL: *objectKey, SortOrder: *sortOrder}
+			img.URL = storage.PublicURL(r.mediaBase, img.URL)
+			thumbnailURL := storage.PublicURL(r.mediaBase, *thumbnailKey)
+			img.ThumbnailURL = &thumbnailURL
+			detail.Images = append(detail.Images, img)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate checkpoint detail: %w", err)
+	}
+	if detail.Checkpoint == nil {
+		return nil, ErrNotFound
 	}
 
 	// Overlay the hot Redis counter when present — it leads the lazily-persisted
 	// DB column.
 	if r.redis != nil {
 		if n, rerr := r.redis.Get(ctx, viewKey(id)).Int(); rerr == nil {
-			cp.ViewCount = n
+			detail.Checkpoint.ViewCount = n
 		}
 	}
 
-	var author Author
-	if err := r.db.QueryRow(ctx,
-		`SELECT username, display_name, avatar_key FROM users WHERE id = $1`, cp.UserID).
-		Scan(&author.Username, &author.DisplayName, &author.AvatarURL); err != nil {
-		return nil, fmt.Errorf("get checkpoint author: %w", err)
-	}
-	if author.AvatarURL != nil {
-		url := storage.PublicURL(r.mediaBase, *author.AvatarURL)
-		author.AvatarURL = &url
-	}
-
-	images, err := r.ListImages(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return &Detail{Checkpoint: cp, Images: images, Author: &author}, nil
+	return &detail, nil
 }
 
 // ListImages returns a checkpoint's images ordered by sort_order.
