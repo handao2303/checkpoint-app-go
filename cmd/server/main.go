@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/gamification"
@@ -39,6 +40,35 @@ func main() {
 	}
 }
 
+type startupTask struct {
+	name string
+	run  func() error
+}
+
+func runStartupTasks(tasks ...startupTask) error {
+	started := time.Now()
+	var group errgroup.Group
+	for _, task := range tasks {
+		group.Go(func() error {
+			taskStarted := time.Now()
+			err := task.run()
+			if err != nil {
+				log.Printf("startup dependency %s failed after %s", task.name, time.Since(taskStarted))
+				return fmt.Errorf("%s: %w", task.name, err)
+			}
+			log.Printf("startup dependency %s ready in %s", task.name, time.Since(taskStarted))
+			return nil
+		})
+	}
+	err := group.Wait()
+	if err != nil {
+		log.Printf("startup dependencies failed after %s", time.Since(started))
+		return err
+	}
+	log.Printf("startup dependencies initialized in %s", time.Since(started))
+	return nil
+}
+
 func run() error {
 	_ = godotenv.Load()
 
@@ -47,7 +77,9 @@ func run() error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	redisClient, err := appmw.NewRedisClient(cfg.redisURL)
 	if err != nil {
 		return err
@@ -61,16 +93,27 @@ func run() error {
 		return fmt.Errorf("connect db: %w", err)
 	}
 	defer pool.Close()
-	if err := pool.Ping(ctx); err != nil {
-		return fmt.Errorf("ping db: %w", err)
+
+	var verifier *supabase.Verifier
+	if err := runStartupTasks(
+		startupTask{
+			name: "postgres",
+			run:  func() error { return pool.Ping(ctx) },
+		},
+		startupTask{
+			name: "supabase jwks",
+			run: func() error {
+				var err error
+				verifier, err = supabase.NewVerifier(ctx, supabase.JWKSURL(cfg.supabaseURL))
+				return err
+			},
+		},
+	); err != nil {
+		return err
 	}
 
 	// Wire the identity domain.
 	tokens := identity.NewTokenManager(cfg.jwtSecret, cfg.accessTTL, cfg.refreshTTL)
-	verifier, err := supabase.NewVerifier(ctx, supabase.JWKSURL(cfg.supabaseURL))
-	if err != nil {
-		return fmt.Errorf("supabase verifier: %w", err)
-	}
 	r2 := storage.NewR2(cfg.r2)
 	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL, redisClient), tokens, verifier, r2)
 	identityHandler := identity.NewHandler(identitySvc)
