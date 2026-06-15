@@ -38,3 +38,15 @@ func TestRepositoryViewCountMiss(t *testing.T) {
 		t.Fatalf("viewCount() = %d, want nil", *count)
 	}
 }
+
+func TestRepositoryViewCountRedisError(t *testing.T) {
+	t.Parallel()
+
+	client := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"})
+	t.Cleanup(func() { _ = client.Close() })
+
+	repo := &Repository{redis: client}
+	if count := <-repo.viewCount(context.Background(), "cp-1"); count != nil {
+		t.Fatalf("viewCount() = %d, want nil", *count)
+	}
+}
