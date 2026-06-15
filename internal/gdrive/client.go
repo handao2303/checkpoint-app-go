@@ -32,26 +32,24 @@ const (
 type Client struct {
 	clientID     string
 	clientSecret string
-	redirectURI  string
 	http         *http.Client
 }
 
 // NewClient builds a Drive API client.
-func NewClient(clientID, clientSecret, redirectURI string) *Client {
+func NewClient(clientID, clientSecret string) *Client {
 	return &Client{
 		clientID:     clientID,
 		clientSecret: clientSecret,
-		redirectURI:  redirectURI,
 		http:         &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
 // BuildAuthURL returns the Google OAuth2 authorization URL with the given
-// state (a signed JWT containing the user ID).
-func (c *Client) BuildAuthURL(state string) string {
+// state (a signed JWT containing the user ID) and redirectURI.
+func (c *Client) BuildAuthURL(state, redirectURI string) string {
 	params := url.Values{
 		"client_id":     {c.clientID},
-		"redirect_uri":  {c.redirectURI},
+		"redirect_uri":  {redirectURI},
 		"response_type": {"code"},
 		"scope":         {"openid email " + driveScope},
 		"access_type":   {"offline"},
@@ -73,12 +71,12 @@ type rawTokenResponse struct {
 
 // Exchange exchanges an authorization code for tokens and resolves the user's
 // Google account email via the userinfo endpoint.
-func (c *Client) Exchange(ctx context.Context, userID, code string) (*Tokens, error) {
+func (c *Client) Exchange(ctx context.Context, userID, code, redirectURI string) (*Tokens, error) {
 	raw, err := c.postToken(ctx, url.Values{
 		"code":          {code},
 		"client_id":     {c.clientID},
 		"client_secret": {c.clientSecret},
-		"redirect_uri":  {c.redirectURI},
+		"redirect_uri":  {redirectURI},
 		"grant_type":    {"authorization_code"},
 	})
 	if err != nil {

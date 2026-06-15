@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,15 +16,38 @@ import (
 
 // Handler exposes Drive OAuth endpoints.
 type Handler struct {
-	repo        *Repository
-	client      *Client
-	jwtSecret   []byte
-	frontendURL string // where to redirect after OAuth callback
+	repo                *Repository
+	client              *Client
+	jwtSecret           []byte
+	frontendURL         string // where to redirect after OAuth callback
+	redirectURIOverride string // optional: set via GOOGLE_DRIVE_REDIRECT_URI env; empty = auto-compute
 }
 
 // NewHandler builds a Drive HTTP handler.
-func NewHandler(repo *Repository, client *Client, jwtSecret []byte, frontendURL string) *Handler {
-	return &Handler{repo: repo, client: client, jwtSecret: jwtSecret, frontendURL: frontendURL}
+func NewHandler(repo *Repository, client *Client, jwtSecret []byte, frontendURL, redirectURIOverride string) *Handler {
+	return &Handler{
+		repo:                repo,
+		client:              client,
+		jwtSecret:           jwtSecret,
+		frontendURL:         frontendURL,
+		redirectURIOverride: redirectURIOverride,
+	}
+}
+
+// callbackURI returns the OAuth callback URL. If GOOGLE_DRIVE_REDIRECT_URI is
+// set it is used verbatim; otherwise the URI is inferred from the request host.
+// Cloud Run sets X-Forwarded-Proto so the scheme is always correct.
+func (h *Handler) callbackURI(r *http.Request) string {
+	if h.redirectURIOverride != "" {
+		return h.redirectURIOverride
+	}
+	scheme := "https"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if strings.HasPrefix(r.Host, "localhost") || strings.HasPrefix(r.Host, "127.0.0.1") {
+		scheme = "http"
+	}
+	return scheme + "://" + r.Host + "/integrations/drive/callback"
 }
 
 // Register mounts Drive integration routes.
@@ -63,7 +87,7 @@ func (h *Handler) Init(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, http.StatusOK, map[string]string{
-		"auth_url": h.client.BuildAuthURL(state),
+		"auth_url": h.client.BuildAuthURL(state, h.callbackURI(r)),
 	})
 }
 
@@ -95,7 +119,7 @@ func (h *Handler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 	userID := claims.Subject
 
-	tokens, err := h.client.Exchange(r.Context(), userID, code)
+	tokens, err := h.client.Exchange(r.Context(), userID, code, h.callbackURI(r))
 	if err != nil {
 		log.Printf("gdrive: exchange code user=%s: %v", userID, err)
 		http.Redirect(w, r, h.frontendURL+"/profile?drive=error", http.StatusFound)

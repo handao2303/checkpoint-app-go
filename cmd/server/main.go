@@ -130,9 +130,9 @@ func run() error {
 	var driveHandler *gdrive.Handler
 	if cfg.drive.clientID != "" {
 		driveRepo := gdrive.NewRepository(pool)
-		driveClient := gdrive.NewClient(cfg.drive.clientID, cfg.drive.clientSecret, cfg.drive.redirectURI)
+		driveClient := gdrive.NewClient(cfg.drive.clientID, cfg.drive.clientSecret)
 		cpHandler.WithDriveSyncer(gdrive.NewSyncer(driveRepo, driveClient))
-		driveHandler = gdrive.NewHandler(driveRepo, driveClient, []byte(cfg.jwtSecret), cfg.drive.frontendURL)
+		driveHandler = gdrive.NewHandler(driveRepo, driveClient, []byte(cfg.jwtSecret), cfg.drive.frontendURL, cfg.drive.redirectURI)
 	}
 	checkpointHandler := cpHandler
 	reactionHandler := reaction.NewHandler(reaction.NewService(reaction.NewRepository(pool)))
