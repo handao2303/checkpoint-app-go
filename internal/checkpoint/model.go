@@ -52,6 +52,7 @@ type CreateResult struct {
 	TotalXP    int                  `json:"total_xp"`
 	Level      int                  `json:"level"`
 	NewBadges  []gamification.Badge `json:"new_badges,omitempty"` // badges unlocked by this check-in
+	Images     []Image              `json:"images,omitempty"`     // all images linked at creation time
 }
 
 // Image is a photo attached to a checkpoint.

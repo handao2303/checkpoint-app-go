@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/quanluon/checkpoint-app/internal/gdrive"
 	"github.com/quanluon/checkpoint-app/pkg/authctx"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 )
@@ -17,12 +18,19 @@ const maxUploadBytes = 20 << 20 // 20 MiB per request
 
 // Handler exposes the checkpoint domain over HTTP.
 type Handler struct {
-	svc *Service
+	svc         *Service
+	driveSyncer *gdrive.Syncer // nil when Drive is not configured
 }
 
 // NewHandler builds a checkpoint HTTP handler.
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// WithDriveSyncer attaches a Drive syncer to the handler.
+func (h *Handler) WithDriveSyncer(s *gdrive.Syncer) *Handler {
+	h.driveSyncer = s
+	return h
 }
 
 // Register mounts checkpoint routes under /checkpoints. Most require auth;
@@ -102,6 +110,26 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusInternalServerError, "could not create checkpoint")
 		return
 	}
+
+	if h.driveSyncer != nil && len(result.Images) > 0 {
+		imageURLs := make([]string, len(result.Images))
+		for i, img := range result.Images {
+			imageURLs[i] = img.URL
+		}
+		h.driveSyncer.SyncCheckpoint(p.UserID, gdrive.CheckpointMeta{
+			ID:        result.Checkpoint.ID,
+			Name:      result.Checkpoint.Name,
+			Lat:       result.Checkpoint.Lat,
+			Lng:       result.Checkpoint.Lng,
+			Address:   result.Checkpoint.Address,
+			Rating:    result.Checkpoint.Rating,
+			Note:      result.Checkpoint.Note,
+			Category:  result.Checkpoint.Category,
+			CreatedAt: result.Checkpoint.CreatedAt,
+			ImageURLs: imageURLs,
+		})
+	}
+
 	respond.JSON(w, http.StatusCreated, result)
 }
 

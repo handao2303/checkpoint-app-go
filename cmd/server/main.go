@@ -23,6 +23,7 @@ import (
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/gamification"
+	"github.com/quanluon/checkpoint-app/internal/gdrive"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
 	"github.com/quanluon/checkpoint-app/internal/locationiq"
@@ -124,8 +125,16 @@ func run() error {
 	placeHandler := place.NewHandler(place.NewService(placeRepo))
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
-	checkpointHandler := checkpoint.NewHandler(
+	cpHandler := checkpoint.NewHandler(
 		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient), r2, journeyRepo))
+	var driveHandler *gdrive.Handler
+	if cfg.drive.clientID != "" {
+		driveRepo := gdrive.NewRepository(pool)
+		driveClient := gdrive.NewClient(cfg.drive.clientID, cfg.drive.clientSecret, cfg.drive.redirectURI)
+		cpHandler.WithDriveSyncer(gdrive.NewSyncer(driveRepo, driveClient))
+		driveHandler = gdrive.NewHandler(driveRepo, driveClient, []byte(cfg.jwtSecret), cfg.drive.frontendURL)
+	}
+	checkpointHandler := cpHandler
 	reactionHandler := reaction.NewHandler(reaction.NewService(reaction.NewRepository(pool)))
 	googlePlacesHandler := locationiq.NewHandler(locationiq.NewClient(cfg.placesAPIKey))
 
@@ -194,6 +203,9 @@ func run() error {
 	journeyHandler.Register(r, authenticated, optionalAuth)
 	gamificationHandler.Register(r, authenticated)
 	googlePlacesHandler.Register(r, authenticated)
+	if driveHandler != nil {
+		driveHandler.Register(r, authenticated)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -225,6 +237,13 @@ func run() error {
 	}
 }
 
+type driveConfig struct {
+	clientID     string
+	clientSecret string
+	redirectURI  string
+	frontendURL  string
+}
+
 type config struct {
 	port         string
 	env          string
@@ -238,6 +257,7 @@ type config struct {
 	r2           storage.R2Config
 	rateLimit    appmw.RateLimitConfig
 	placesAPIKey string
+	drive        driveConfig
 }
 
 func loadConfig() (config, error) {
@@ -260,6 +280,12 @@ func loadConfig() (config, error) {
 			Enabled: boolEnv("RATE_LIMIT_ENABLED", true),
 		},
 		placesAPIKey: os.Getenv("LOCATIONIQ_API_KEY"),
+		drive: driveConfig{
+			clientID:     os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
+			clientSecret: os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
+			redirectURI:  os.Getenv("GOOGLE_DRIVE_REDIRECT_URI"),
+			frontendURL:  getEnv("FRONTEND_URL", "http://localhost:5173"),
+		},
 	}
 
 	var err error

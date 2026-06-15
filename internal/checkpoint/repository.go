@@ -158,8 +158,23 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit checkpoint: %w", err)
 	}
+
+	// Build the image list from the keys that were just inserted (public URLs).
+	images := make([]Image, len(p.Images))
+	for i, key := range p.Images {
+		images[i] = Image{
+			URL:       storage.PublicURL(r.mediaBase, key.ObjectKey),
+			SortOrder: i,
+		}
+		if key.ThumbnailKey != nil {
+			u := storage.PublicURL(r.mediaBase, *key.ThumbnailKey)
+			images[i].ThumbnailURL = &u
+		}
+	}
+
 	return &CreateResult{
 		Checkpoint: cp, XPAwarded: p.XPReward, TotalXP: totalXP, Level: level, NewBadges: newBadges,
+		Images: images,
 	}, nil
 }
 
