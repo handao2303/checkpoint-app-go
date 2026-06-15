@@ -86,7 +86,7 @@ func (s *Service) GetDetail(ctx context.Context, id string) (*Detail, error) {
 	return s.repo.GetDetail(ctx, id)
 }
 
-// Feed returns community check-ins ordered nearest → farthest (keyset cursor).
+// Feed returns community check-ins ordered newest → oldest (keyset cursor).
 func (s *Service) Feed(ctx context.Context, lat, lng float64, cursor string, limit int) (*Feed, error) {
 	if lat < -90 || lat > 90 || lng < -180 || lng > 180 {
 		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)

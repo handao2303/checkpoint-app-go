@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY idx_checkpoints_user_feed_active;

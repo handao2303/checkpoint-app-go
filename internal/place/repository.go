@@ -208,6 +208,34 @@ const feedSelect = `c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat
 	u.username, u.display_name, u.avatar_key,
 	c.image_key, c.thumbnail_key`
 
+const feedFirstPageQuery = `SELECT ` + feedSelect + `,
+	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+	FROM checkpoints c JOIN users u ON u.id = c.user_id
+	WHERE c.deleted_at IS NULL
+	ORDER BY c.created_at DESC, c.id DESC LIMIT $3`
+
+const feedCursorPageQuery = `SELECT ` + feedSelect + `,
+	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+	FROM checkpoints c JOIN users u ON u.id = c.user_id
+	WHERE c.deleted_at IS NULL
+	  AND (c.created_at, c.id) < ($3, $4)
+	ORDER BY c.created_at DESC, c.id DESC LIMIT $5`
+
+const followingFeedFirstPageQuery = `SELECT ` + feedSelect + `,
+	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+	FROM checkpoints c JOIN users u ON u.id = c.user_id
+	WHERE c.deleted_at IS NULL
+	  AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $3)
+	ORDER BY c.created_at DESC, c.id DESC LIMIT $4`
+
+const followingFeedCursorPageQuery = `SELECT ` + feedSelect + `,
+	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+	FROM checkpoints c JOIN users u ON u.id = c.user_id
+	WHERE c.deleted_at IS NULL
+	  AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $6)
+	  AND (c.created_at, c.id) < ($3, $4)
+	ORDER BY c.created_at DESC, c.id DESC LIMIT $5`
+
 // parseFeedCursor decodes a "<unix_microseconds>:<id>" keyset cursor.
 func parseFeedCursor(cursor string) (*time.Time, *string) {
 	if parts := strings.SplitN(cursor, ":", 2); cursor != "" && len(parts) == 2 {
@@ -265,16 +293,13 @@ func (r *Repository) scanFeedRows(rows pgx.Rows, limit int) (*Feed, error) {
 // previous page's last item ("" for the first page). No radius limit.
 func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error) {
 	cursorTime, cursorID := parseFeedCursor(cursor)
-	rows, err := r.db.Query(ctx,
-		`SELECT `+feedSelect+`,
-		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
-		 FROM checkpoints c JOIN users u ON u.id = c.user_id
-		 WHERE c.deleted_at IS NULL
-		   AND ($3::timestamptz IS NULL
-		        OR c.created_at < $3
-		        OR (c.created_at = $3 AND c.id < $4::uuid))
-		 ORDER BY c.created_at DESC, c.id DESC LIMIT $5`,
-		lng, lat, cursorTime, cursorID, limit)
+	var rows pgx.Rows
+	var err error
+	if cursorTime == nil {
+		rows, err = r.db.Query(ctx, feedFirstPageQuery, lng, lat, limit)
+	} else {
+		rows, err = r.db.Query(ctx, feedCursorPageQuery, lng, lat, cursorTime, cursorID, limit)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("feed: %w", err)
 	}
@@ -285,17 +310,13 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 // followerID follows.
 func (r *Repository) FeedFollowing(ctx context.Context, followerID string, lng, lat float64, cursor string, limit int) (*Feed, error) {
 	cursorTime, cursorID := parseFeedCursor(cursor)
-	rows, err := r.db.Query(ctx,
-		`SELECT `+feedSelect+`,
-		        ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
-		 FROM checkpoints c JOIN users u ON u.id = c.user_id
-		 WHERE c.deleted_at IS NULL
-		   AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $6)
-		   AND ($3::timestamptz IS NULL
-		        OR c.created_at < $3
-		        OR (c.created_at = $3 AND c.id < $4::uuid))
-		 ORDER BY c.created_at DESC, c.id DESC LIMIT $5`,
-		lng, lat, cursorTime, cursorID, limit, followerID)
+	var rows pgx.Rows
+	var err error
+	if cursorTime == nil {
+		rows, err = r.db.Query(ctx, followingFeedFirstPageQuery, lng, lat, followerID, limit)
+	} else {
+		rows, err = r.db.Query(ctx, followingFeedCursorPageQuery, lng, lat, cursorTime, cursorID, limit, followerID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("feed following: %w", err)
 	}
