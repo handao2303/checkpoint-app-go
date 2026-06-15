@@ -61,6 +61,19 @@ const viewTTL = 7 * 24 * time.Hour
 
 func viewKey(id string) string { return "views:" + id }
 
+func (r *Repository) viewCount(ctx context.Context, id string) <-chan *int {
+	result := make(chan *int, 1)
+	go func() {
+		n, err := r.redis.Get(ctx, viewKey(id)).Int()
+		if err != nil {
+			result <- nil
+			return
+		}
+		result <- &n
+	}()
+	return result
+}
+
 func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 	var c Checkpoint
 	err := row.Scan(
@@ -257,6 +270,11 @@ func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
 
 // GetDetail returns a checkpoint with its author (joined from users) and images.
 func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) {
+	var hotViewCount <-chan *int
+	if r.redis != nil {
+		hotViewCount = r.viewCount(ctx, id)
+	}
+
 	rows, err := r.db.Query(ctx,
 		`SELECT c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
 		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.created_at, c.updated_at,
@@ -312,10 +330,11 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 	}
 
 	// Overlay the hot Redis counter when present — it leads the lazily-persisted
-	// DB column.
-	if r.redis != nil {
-		if n, rerr := r.redis.Get(ctx, viewKey(id)).Int(); rerr == nil {
-			detail.Checkpoint.ViewCount = n
+	// DB column. The lookup runs alongside the DB query to avoid another
+	// sequential remote round trip.
+	if hotViewCount != nil {
+		if n := <-hotViewCount; n != nil {
+			detail.Checkpoint.ViewCount = *n
 		}
 	}
 
