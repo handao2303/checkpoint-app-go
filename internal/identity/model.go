@@ -22,6 +22,7 @@ type User struct {
 	Level           int       `json:"level"`
 	CheckpointCount int       `json:"checkpoint_count"`
 	JourneyCount    int       `json:"journey_count"`
+	CheckinStreak   int       `json:"checkin_streak"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 

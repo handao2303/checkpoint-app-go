@@ -19,28 +19,28 @@ type badgeDef struct {
 // all that's needed — evaluation and the /me/badges listing both read it.
 var badgeCatalog = []badgeDef{
 	{
-		Badge: Badge{Key: "first_checkin", Name: "Bước chân đầu tiên", Icon: "flag", Color: "emerald",
-			Description: "Cắm cờ lần đầu tiên"},
+		Badge: Badge{Key: "first_checkin", Name: "Bước chân đầu tiên", Icon: "flag", Color: "green",
+			Description: "Cắm cờ lần đầu tiên", Level: 1},
 		rule: func(s badgeStats) bool { return s.CheckpointCount >= 1 },
 	},
 	{
-		Badge: Badge{Key: "explorer_10", Name: "Nhà thám hiểm", Icon: "compass", Color: "sky",
-			Description: "Cắm cờ ở 10 địa điểm"},
+		Badge: Badge{Key: "explorer_10", Name: "Nhà thám hiểm", Icon: "compass", Color: "orange",
+			Description: "Cắm cờ ở 10 địa điểm", Level: 2},
 		rule: func(s badgeStats) bool { return s.CheckpointCount >= 10 },
 	},
 	{
-		Badge: Badge{Key: "provinces_5", Name: "Vòng quanh đất nước", Icon: "map", Color: "violet",
-			Description: "Đặt chân tới 5 tỉnh thành"},
+		Badge: Badge{Key: "provinces_5", Name: "Vòng quanh đất nước", Icon: "map", Color: "gold",
+			Description: "Đặt chân tới 5 tỉnh thành", Level: 2},
 		rule: func(s badgeStats) bool { return s.ProvinceCount >= 5 },
 	},
 	{
-		Badge: Badge{Key: "night_owl", Name: "Cú đêm", Icon: "moon", Color: "indigo",
-			Description: "Check-in trong khoảng 0–5h sáng"},
+		Badge: Badge{Key: "night_owl", Name: "Cú đêm", Icon: "moon", Color: "clay",
+			Description: "Check-in trong khoảng 0–5h sáng", Level: 2},
 		rule: func(s badgeStats) bool { return s.CheckpointCount >= 1 && s.Hour >= 0 && s.Hour < 5 },
 	},
 	{
 		Badge: Badge{Key: "journey_starter", Name: "Kẻ lữ hành", Icon: "luggage", Color: "amber",
-			Description: "Bắt đầu hành trình đầu tiên"},
+			Description: "Bắt đầu hành trình đầu tiên", Level: 1},
 		rule: func(s badgeStats) bool { return s.JourneyCount >= 1 },
 	},
 }

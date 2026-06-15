@@ -54,15 +54,16 @@ type Leaderboard struct {
 // Badge is an achievement definition (catalog entry).
 //
 // Icon is a key into the web client's self-hosted SVG icon registry (not an
-// emoji), and Color is a palette token (see the web BadgeMedal component) used
-// to render a coloured medallion — and, later, a flair overlaid on the profile
-// avatar.
+// emoji), Color is a palette token (see the web BadgeMedal component), and
+// Level is a static difficulty label (1 = easy, 2 = medium, 3 = hard) shown
+// in the UI as "Cấp X".
 type Badge struct {
 	Key         string `json:"key"`
 	Name        string `json:"name"`
 	Icon        string `json:"icon"`
 	Color       string `json:"color"`
 	Description string `json:"description"`
+	Level       int    `json:"level"`
 }
 
 // UserBadge is a catalog badge annotated with whether the user has earned it.

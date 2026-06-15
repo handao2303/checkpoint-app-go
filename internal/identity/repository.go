@@ -41,7 +41,7 @@ const followingTTL = 24 * time.Hour
 func followingKey(followerID string) string { return "following:" + followerID }
 
 const userColumns = `id, supabase_id, email, username, display_name, avatar_key, bio,
-	role, is_anonymous, total_xp, level, checkpoint_count, journey_count, created_at, updated_at`
+	role, is_anonymous, total_xp, level, checkpoint_count, journey_count, checkin_streak, created_at, updated_at`
 
 // withAvatarURL turns the stored avatar key into a full public URL.
 func (r *Repository) withAvatarURL(u *User) *User {
@@ -57,7 +57,7 @@ func scanUser(row pgx.Row) (*User, error) {
 	err := row.Scan(
 		&u.ID, &u.SupabaseID, &u.Email, &u.Username, &u.DisplayName, &u.AvatarURL, &u.Bio,
 		&u.Role, &u.IsAnonymous, &u.TotalXP, &u.Level, &u.CheckpointCount, &u.JourneyCount,
-		&u.CreatedAt, &u.UpdatedAt,
+		&u.CheckinStreak, &u.CreatedAt, &u.UpdatedAt,
 	)
 	if err == nil {
 		// Attach derived level progress so every user read exposes it.

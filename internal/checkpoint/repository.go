@@ -142,6 +142,10 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		return nil, fmt.Errorf("evaluate badges: %w", err)
 	}
 
+	if err := updateStreakTx(ctx, tx, p.UserID); err != nil {
+		return nil, fmt.Errorf("update streak: %w", err)
+	}
+
 	if err := insertImagesTx(ctx, tx, cp.ID, p.Images); err != nil {
 		return nil, fmt.Errorf("insert images: %w", err)
 	}
@@ -176,6 +180,22 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		Checkpoint: cp, XPAwarded: p.XPReward, TotalXP: totalXP, Level: level, NewBadges: newBadges,
 		Images: images,
 	}, nil
+}
+
+// updateStreakTx increments or resets the user's daily check-in streak inside the
+// check-in transaction. The single UPDATE is safe under concurrent check-ins
+// because AwardXPTx already holds a FOR UPDATE lock on the user row.
+func updateStreakTx(ctx context.Context, tx pgx.Tx, userID string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE users SET
+			checkin_streak = CASE
+				WHEN last_checkin_date = CURRENT_DATE              THEN checkin_streak
+				WHEN last_checkin_date = CURRENT_DATE - INTERVAL '1 day' THEN checkin_streak + 1
+				ELSE 1
+			END,
+			last_checkin_date = GREATEST(COALESCE(last_checkin_date, '1970-01-01'::date), CURRENT_DATE)
+		WHERE id = $1`, userID)
+	return err
 }
 
 // insertImagesTx inserts checkpoint_images rows and updates denormalized cover fields.

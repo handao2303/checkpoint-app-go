@@ -37,8 +37,8 @@ const (
 	cacheMax = 500
 	// Comma-separated OSM tags to query. Covers the app's 5 categories.
 	// Note: LocationIQ's "tag" filter is currently unreliable, so we fetch all types and map them client-side.
-	// nearbyTags = "cafe,restaurant,fast_food,bar,pub,bakery,park,viewpoint,attraction"
-	apiBase = "https://us1.locationiq.com/v1/nearby"
+	nearbyTags = "cafe,restaurant,fast_food,bar,pub,bakery,park,viewpoint,attraction"
+	apiBase    = "https://us1.locationiq.com/v1/nearby"
 )
 
 // NewClient creates a Client. When apiKey is empty, Search always returns [].
@@ -115,10 +115,10 @@ type nearbyPlace struct {
 
 func (c *Client) fetchFromAPI(ctx context.Context, lat, lng float64) []PlaceSuggestion {
 	params := url.Values{
-		"key": {c.apiKey},
-		"lat": {fmt.Sprintf("%f", lat)},
-		"lon": {fmt.Sprintf("%f", lng)},
-		// "tag":    {nearbyTags},
+		"key":    {c.apiKey},
+		"lat":    {fmt.Sprintf("%f", lat)},
+		"lon":    {fmt.Sprintf("%f", lng)},
+		"tag":    {nearbyTags},
 		"radius": {"150"},
 		"limit":  {"5"},
 		"format": {"json"},
