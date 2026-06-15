@@ -22,8 +22,10 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
+	"github.com/quanluon/checkpoint-app/internal/cloudsync"
 	"github.com/quanluon/checkpoint-app/internal/gamification"
 	"github.com/quanluon/checkpoint-app/internal/gdrive"
+	"github.com/quanluon/checkpoint-app/internal/gphotos"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
 	"github.com/quanluon/checkpoint-app/internal/locationiq"
@@ -128,12 +130,22 @@ func run() error {
 	cpHandler := checkpoint.NewHandler(
 		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient), r2, journeyRepo))
 	var driveHandler *gdrive.Handler
+	var driveSyncer *gdrive.Syncer
 	if cfg.drive.clientID != "" {
 		driveRepo := gdrive.NewRepository(pool)
 		driveClient := gdrive.NewClient(cfg.drive.clientID, cfg.drive.clientSecret)
-		cpHandler.WithDriveSyncer(gdrive.NewSyncer(driveRepo, driveClient))
+		driveSyncer = gdrive.NewSyncer(driveRepo, driveClient)
 		driveHandler = gdrive.NewHandler(driveRepo, driveClient, []byte(cfg.jwtSecret), cfg.drive.frontendURL, cfg.drive.redirectURI)
 	}
+	var photosHandler *gphotos.Handler
+	var photosSyncer *gphotos.Syncer
+	if cfg.photos.clientID != "" {
+		photosRepo := gphotos.NewRepository(pool)
+		photosClient := gphotos.NewClient(cfg.photos.clientID, cfg.photos.clientSecret)
+		photosSyncer = gphotos.NewSyncer(photosRepo, photosClient)
+		photosHandler = gphotos.NewHandler(photosRepo, photosClient, []byte(cfg.jwtSecret), cfg.drive.frontendURL, cfg.photos.redirectURI)
+	}
+	cpHandler.WithCloudSyncer(cloudsync.New(driveSyncer, photosSyncer))
 	checkpointHandler := cpHandler
 	reactionHandler := reaction.NewHandler(reaction.NewService(reaction.NewRepository(pool)))
 	googlePlacesHandler := locationiq.NewHandler(locationiq.NewClient(cfg.placesAPIKey))
@@ -206,6 +218,9 @@ func run() error {
 	if driveHandler != nil {
 		driveHandler.Register(r, authenticated)
 	}
+	if photosHandler != nil {
+		photosHandler.Register(r, authenticated)
+	}
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.port,
@@ -244,6 +259,12 @@ type driveConfig struct {
 	frontendURL  string
 }
 
+type photosConfig struct {
+	clientID     string
+	clientSecret string
+	redirectURI  string
+}
+
 type config struct {
 	port         string
 	env          string
@@ -258,6 +279,7 @@ type config struct {
 	rateLimit    appmw.RateLimitConfig
 	placesAPIKey string
 	drive        driveConfig
+	photos       photosConfig
 }
 
 func loadConfig() (config, error) {
@@ -285,6 +307,12 @@ func loadConfig() (config, error) {
 			clientSecret: os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
 			redirectURI:  os.Getenv("GOOGLE_DRIVE_REDIRECT_URI"),
 			frontendURL:  getEnv("FRONTEND_URL", "http://localhost:5173"),
+		},
+		photos: photosConfig{
+			// Falls back to Drive credentials so users don't need extra env vars.
+			clientID:     firstNonEmpty("GOOGLE_PHOTOS_CLIENT_ID", "GOOGLE_DRIVE_CLIENT_ID"),
+			clientSecret: firstNonEmpty("GOOGLE_PHOTOS_CLIENT_SECRET", "GOOGLE_DRIVE_CLIENT_SECRET"),
+			redirectURI:  os.Getenv("GOOGLE_PHOTOS_REDIRECT_URI"),
 		},
 	}
 
@@ -326,10 +354,20 @@ func splitCSV(s string) []string {
 }
 
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 		return v
 	}
 	return fallback
+}
+
+// firstNonEmpty returns the value of the first key whose env var is non-empty.
+func firstNonEmpty(keys ...string) string {
+	for _, k := range keys {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func boolEnv(key string, fallback bool) bool {

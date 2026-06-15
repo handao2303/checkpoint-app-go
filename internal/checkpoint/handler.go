@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/quanluon/checkpoint-app/internal/gdrive"
+	"github.com/quanluon/checkpoint-app/internal/cloudsync"
 	"github.com/quanluon/checkpoint-app/pkg/authctx"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 )
@@ -18,8 +18,8 @@ const maxUploadBytes = 20 << 20 // 20 MiB per request
 
 // Handler exposes the checkpoint domain over HTTP.
 type Handler struct {
-	svc         *Service
-	driveSyncer *gdrive.Syncer // nil when Drive is not configured
+	svc    *Service
+	syncer *cloudsync.Syncer // nil when no cloud sync is configured
 }
 
 // NewHandler builds a checkpoint HTTP handler.
@@ -27,9 +27,12 @@ func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// WithDriveSyncer attaches a Drive syncer to the handler.
-func (h *Handler) WithDriveSyncer(s *gdrive.Syncer) *Handler {
-	h.driveSyncer = s
+// WithDriveSyncer is kept for compatibility; use WithCloudSyncer going forward.
+// Deprecated: wire via WithCloudSyncer instead.
+
+// WithCloudSyncer attaches the fan-out cloud syncer to the handler.
+func (h *Handler) WithCloudSyncer(s *cloudsync.Syncer) *Handler {
+	h.syncer = s
 	return h
 }
 
@@ -111,22 +114,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if h.driveSyncer != nil && len(result.Images) > 0 {
+	if len(result.Images) > 0 {
 		imageURLs := make([]string, len(result.Images))
 		for i, img := range result.Images {
 			imageURLs[i] = img.URL
 		}
-		h.driveSyncer.SyncCheckpoint(p.UserID, gdrive.CheckpointMeta{
-			ID:        result.Checkpoint.ID,
-			Name:      result.Checkpoint.Name,
-			Lat:       result.Checkpoint.Lat,
-			Lng:       result.Checkpoint.Lng,
-			Address:   result.Checkpoint.Address,
-			Rating:    result.Checkpoint.Rating,
-			Note:      result.Checkpoint.Note,
-			Category:  result.Checkpoint.Category,
-			CreatedAt: result.Checkpoint.CreatedAt,
-			ImageURLs: imageURLs,
+		cp := result.Checkpoint
+		h.syncer.SyncCheckpoint(p.UserID, cloudsync.CheckpointMeta{
+			ID: cp.ID, Name: cp.Name, Lat: cp.Lat, Lng: cp.Lng,
+			Address: cp.Address, Rating: cp.Rating, Note: cp.Note,
+			Category: cp.Category, CreatedAt: cp.CreatedAt, ImageURLs: imageURLs,
 		})
 	}
 
