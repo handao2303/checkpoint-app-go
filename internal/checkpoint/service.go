@@ -73,95 +73,104 @@ func NewService(repo repository, storage fileStorage, journeys journeyValidator)
 
 // Input is the user-supplied data for a check-in (before validation).
 type Input struct {
-	Name      string
-	Category  string
-	Note      *string
-	Rating    *int16
-	Lat       float64
-	Lng       float64
-	Address   *string
-	Province  *string
-	PlaceID   *string
-	JourneyID *string
-	// Images are keys for files already uploaded directly to R2. Required (≥1).
-	Images []ImageKeys
+        Name         string
+        Category     string
+        Note         *string
+        Rating       *int16
+        Lat          float64
+        Lng          float64
+        Address      *string
+        Province     *string
+        ProvinceCode *string
+        PlaceID      *string
+        JourneyID    *string
+        // Images are keys for files already uploaded directly to R2. Required (≥1).
+        Images []ImageKeys
 }
 
 // Create validates input and creates a checkpoint, awarding XP.
 func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateResult, error) {
-	name := strings.TrimSpace(in.Name)
-	if name == "" {
-		return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
-	}
-	if in.Lat < -90 || in.Lat > 90 || in.Lng < -180 || in.Lng > 180 {
-		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
-	}
-	if in.Rating != nil && (*in.Rating < 1 || *in.Rating > 5) {
-		return nil, fmt.Errorf("%w: rating must be 1..5", ErrInvalidInput)
-	}
-	if len(in.Images) < 1 {
-		return nil, fmt.Errorf("%w: ít nhất 1 ảnh", ErrInvalidInput)
-	}
-	if len(in.Images) > maxImages {
-		return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
-	}
-	for _, img := range in.Images {
-		if !strings.HasPrefix(img.ObjectKey, "checkpoints/") {
-			return nil, fmt.Errorf("%w: invalid image key", ErrInvalidInput)
-		}
-		if img.ThumbnailKey != nil && !strings.HasPrefix(*img.ThumbnailKey, "checkpoints/") {
-			return nil, fmt.Errorf("%w: invalid thumbnail key", ErrInvalidInput)
-		}
-	}
-	category := strings.TrimSpace(in.Category)
-	if category == "" {
-		category = "other"
-	}
+        name := strings.TrimSpace(in.Name)
+        if name == "" {
+                return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+        }
+        if in.Lat < -90 || in.Lat > 90 || in.Lng < -180 || in.Lng > 180 {
+                return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
+        }
+        if in.Rating != nil && (*in.Rating < 1 || *in.Rating > 5) {
+                return nil, fmt.Errorf("%w: rating must be 1..5", ErrInvalidInput)
+        }
+        if len(in.Images) < 1 {
+                return nil, fmt.Errorf("%w: ít nhất 1 ảnh", ErrInvalidInput)
+        }
+        if len(in.Images) > maxImages {
+                return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
+        }
+        for _, img := range in.Images {
+                if !strings.HasPrefix(img.ObjectKey, "checkpoints/") {
+                        return nil, fmt.Errorf("%w: invalid image key", ErrInvalidInput)
+                }
+                if img.ThumbnailKey != nil && !strings.HasPrefix(*img.ThumbnailKey, "checkpoints/") {
+                        return nil, fmt.Errorf("%w: invalid thumbnail key", ErrInvalidInput)
+                }
+        }
+        category := strings.TrimSpace(in.Category)
+        if category == "" {
+                category = "other"
+        }
 
-	// Attach to the journey the user picked (the client chooses one of their
-	// active journeys). Validate ownership so a check-in can't be slipped into
-	// someone else's journey; if it isn't theirs, just leave it unattached.
-	journeyID := in.JourneyID
-	if journeyID != nil && s.journeys != nil {
-		if ok, err := s.journeys.BelongsToUser(ctx, userID, *journeyID); err != nil || !ok {
-			journeyID = nil
-		}
-	}
+        // Attach to the journey the user picked (the client chooses one of their
+        // active journeys). Validate ownership so a check-in can't be slipped into
+        // someone else's journey; if it isn't theirs, just leave it unattached.
+        journeyID := in.JourneyID
+        if journeyID != nil && s.journeys != nil {
+                if ok, err := s.journeys.BelongsToUser(ctx, userID, *journeyID); err != nil || !ok {
+                        journeyID = nil
+                }
+        }
 
-	// Address and province are resolved by the client (lib/photon.ts) before
-	// submit, so the server just sanitizes and stores what it receives.
-	address := in.Address
-	if address != nil {
-		trimmed := strings.TrimSpace(*address)
-		if trimmed == "" {
-			address = nil
-		} else {
-			address = &trimmed
-		}
-	}
+        // Address and province are resolved by the client (lib/bigdatacloud.ts) before
+        // submit, so the server just sanitizes and stores what it receives.
+        address := in.Address
+        if address != nil {
+                trimmed := strings.TrimSpace(*address)
+                if trimmed == "" {
+                        address = nil
+                } else {
+                        address = &trimmed
+                }
+        }
 
-	var province *string
-	if in.Province != nil {
-		if p := strings.TrimSpace(*in.Province); p != "" {
-			province = &p
-		}
-	}
+        var province *string
+        if in.Province != nil {
+                if p := strings.TrimSpace(*in.Province); p != "" {
+                        province = &p
+                }
+        }
 
-	return s.repo.Create(ctx, CreateParams{
-		UserID:    userID,
-		Name:      name,
-		Category:  category,
-		Note:      in.Note,
-		Rating:    in.Rating,
-		Lat:       in.Lat,
-		Lng:       in.Lng,
-		Address:   address,
-		Province:  province,
-		PlaceID:   in.PlaceID,
-		JourneyID: journeyID,
-		XPReward:  checkinXP,
-		Images:    in.Images,
-	})
+        var provinceCode *string
+        if in.ProvinceCode != nil {
+                if p := strings.TrimSpace(*in.ProvinceCode); p != "" {
+                        provinceCode = &p
+                }
+        }
+
+        return s.repo.Create(ctx, CreateParams{
+                UserID:       userID,
+                Name:         name,
+                Category:     category,
+                Note:         in.Note,
+                Rating:       in.Rating,
+                Lat:          in.Lat,
+                Lng:          in.Lng,
+                Address:      address,
+                Province:     province,
+                ProvinceCode: provinceCode,
+                PlaceID:      in.PlaceID,
+                JourneyID:    journeyID,
+                XPReward:     checkinXP,
+                Images:       in.Images,
+        })
 }
 
 // GetDetail returns a checkpoint with images and author.

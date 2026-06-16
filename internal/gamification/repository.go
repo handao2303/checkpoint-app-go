@@ -67,41 +67,47 @@ func (r *Repository) AwardXPTx(
 
 // Passport returns the user's province "stamps" — one per province they've
 // checked in to — newest visit first, each with a representative cover photo.
+// It groups by province_code (ISO) when available, falling back to the name
+// for legacy rows.
 func (r *Repository) Passport(ctx context.Context, userID string) (*Passport, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT g.province, g.checkin_count, g.first_at, g.last_at,
-		        (SELECT c2.thumbnail_key
-		           FROM checkpoints c2
-		          WHERE c2.user_id = $1 AND c2.deleted_at IS NULL
-		            AND c2.province = g.province AND c2.thumbnail_key IS NOT NULL
-		          ORDER BY c2.created_at DESC LIMIT 1) AS cover_key
-		   FROM (
-		     SELECT province, COUNT(*) AS checkin_count,
-		            MIN(created_at) AS first_at, MAX(created_at) AS last_at
-		       FROM checkpoints
-		      WHERE user_id = $1 AND deleted_at IS NULL AND province IS NOT NULL
-		      GROUP BY province
-		   ) g
-		  ORDER BY g.last_at DESC`,
-		userID)
-	if err != nil {
-		return nil, fmt.Errorf("query passport: %w", err)
-	}
-	defer rows.Close()
+        rows, err := r.db.Query(ctx,
+                `SELECT g.province_key, g.display_name, g.checkin_count, g.first_at, g.last_at,
+                        (SELECT c2.thumbnail_key
+                           FROM checkpoints c2
+                          WHERE c2.user_id = $1 AND c2.deleted_at IS NULL
+                            AND COALESCE(c2.province_code, c2.province) = g.province_key 
+                            AND c2.thumbnail_key IS NOT NULL
+                          ORDER BY c2.created_at DESC LIMIT 1) AS cover_key
+                   FROM (
+                     SELECT COALESCE(province_code, province) AS province_key,
+                            MAX(province) AS display_name,
+                            COUNT(*) AS checkin_count,
+                            MIN(created_at) AS first_at, MAX(created_at) AS last_at
+                       FROM checkpoints
+                      WHERE user_id = $1 AND deleted_at IS NULL AND (province IS NOT NULL OR province_code IS NOT NULL)
+                      GROUP BY province_key
+                   ) g
+                  ORDER BY g.last_at DESC`,
+                userID)
+        if err != nil {
+                return nil, fmt.Errorf("query passport: %w", err)
+        }
+        defer rows.Close()
 
-	passport := &Passport{Stamps: []PassportStamp{}}
-	for rows.Next() {
-		var s PassportStamp
-		var coverKey *string
-		if err := rows.Scan(&s.Province, &s.CheckinCount, &s.FirstAt, &s.LastAt, &coverKey); err != nil {
-			return nil, fmt.Errorf("scan passport stamp: %w", err)
-		}
-		if coverKey != nil {
-			url := storage.PublicURL(r.mediaBase, *coverKey)
-			s.CoverURL = &url
-		}
-		passport.Stamps = append(passport.Stamps, s)
-	}
+        passport := &Passport{Stamps: []PassportStamp{}}
+        for rows.Next() {
+                var s PassportStamp
+                var provinceKey string // we group by this but don't return it to UI
+                var coverKey *string
+                if err := rows.Scan(&provinceKey, &s.Province, &s.CheckinCount, &s.FirstAt, &s.LastAt, &coverKey); err != nil {
+                        return nil, fmt.Errorf("scan passport stamp: %w", err)
+                }
+                if coverKey != nil {
+                        url := storage.PublicURL(r.mediaBase, *coverKey)
+                        s.CoverURL = &url
+                }
+                passport.Stamps = append(passport.Stamps, s)
+        }
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate passport: %w", err)
 	}
@@ -157,14 +163,14 @@ func (r *Repository) TopByXP(ctx context.Context, limit int) ([]LeaderboardEntry
 func (r *Repository) EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) ([]Badge, error) {
 	var s badgeStats
 	if err := tx.QueryRow(ctx,
-		`SELECT
-		   u.checkpoint_count,
-		   u.journey_count,
-		   (SELECT COUNT(DISTINCT province) FROM checkpoints c
-		     WHERE c.user_id = u.id AND c.deleted_at IS NULL AND c.province IS NOT NULL),
-		   EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int
-		 FROM users u WHERE u.id = $1`,
-		userID).Scan(&s.CheckpointCount, &s.JourneyCount, &s.ProvinceCount, &s.Hour); err != nil {
+	        `SELECT
+	           u.checkpoint_count,
+	           u.journey_count,
+	           (SELECT COUNT(DISTINCT COALESCE(province_code, province)) FROM checkpoints c
+	             WHERE c.user_id = u.id AND c.deleted_at IS NULL AND (c.province IS NOT NULL OR c.province_code IS NOT NULL)),
+	           EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int
+	         FROM users u WHERE u.id = $1`,
+	        userID).Scan(&s.CheckpointCount, &s.JourneyCount, &s.ProvinceCount, &s.Hour); err != nil {
 		return nil, fmt.Errorf("load badge stats: %w", err)
 	}
 

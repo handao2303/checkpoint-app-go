@@ -108,10 +108,10 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}
 
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, place_id, journey_id, xp_awarded)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		 RETURNING `+cpColumns,
-		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, placeID, p.JourneyID, p.XPReward))
+	        `INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, xp_awarded)
+	         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	         RETURNING `+cpColumns,
+	        p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.XPReward))
 	if err != nil {
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}

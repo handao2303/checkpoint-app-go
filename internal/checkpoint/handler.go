@@ -66,9 +66,10 @@ type createRequest struct {
 	Rating    *int16  `json:"rating"`
 	Lat       float64 `json:"lat"`
 	Lng       float64 `json:"lng"`
-	Address   *string `json:"address"`
-	Province  *string `json:"province"`
-	PlaceID   *string `json:"place_id"`
+	Address      *string `json:"address"`
+	Province     *string `json:"province"`
+	ProvinceCode *string `json:"province_code"`
+	PlaceID      *string `json:"place_id"`
 	JourneyID *string `json:"journey_id"`
 	Images    []struct {
 		ObjectKey    string  `json:"object_key"`
@@ -99,12 +100,13 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		Rating:    req.Rating,
 		Lat:       req.Lat,
 		Lng:       req.Lng,
-		Address:   req.Address,
-		Province:  req.Province,
-		PlaceID:   req.PlaceID,
-		JourneyID: req.JourneyID,
-		Images:    images,
-	})
+		Address:      req.Address,
+		Province:     req.Province,
+		ProvinceCode: req.ProvinceCode,
+		PlaceID:      req.PlaceID,
+		JourneyID:    req.JourneyID,
+		Images:       images,
+		})
 	if err != nil {
 		if errors.Is(err, ErrInvalidInput) {
 			respond.Error(w, http.StatusBadRequest, err.Error())

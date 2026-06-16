@@ -122,6 +122,27 @@ func TestServiceCreate_StoresClientAddress(t *testing.T) {
 	}
 }
 
+func TestServiceCreate_StoresClientProvinceCode(t *testing.T) {
+        repo := &fakeRepo{}
+        prov := "Thành phố Hồ Chí Minh"
+        code := "VN-SG"
+
+        if _, err := NewService(repo, nil, nil).Create(
+                context.Background(),
+                "user1",
+                Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Province: &prov, ProvinceCode: &code, Images: testImages},
+        ); err != nil {
+                t.Fatalf("unexpected error: %v", err)
+        }
+
+        if repo.lastCreate.Province == nil || *repo.lastCreate.Province != prov {
+                t.Fatalf("Province = %v, want %q", repo.lastCreate.Province, prov)
+        }
+        if repo.lastCreate.ProvinceCode == nil || *repo.lastCreate.ProvinceCode != code {
+                t.Fatalf("ProvinceCode = %v, want %q", repo.lastCreate.ProvinceCode, code)
+        }
+}
+
 func TestServiceCreate_HandlesBlankAddress(t *testing.T) {
 	repo := &fakeRepo{}
 	blank := "   "
