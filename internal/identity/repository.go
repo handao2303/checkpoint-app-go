@@ -74,6 +74,32 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*User, error) {
 	return r.getUser(row, "get user by id")
 }
 
+// GetByIDs returns the active users for the given slice of IDs.
+func (r *Repository) GetByIDs(ctx context.Context, ids []string) ([]*User, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT `+userColumns+` FROM users WHERE id = ANY($1) AND deleted_at IS NULL`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("query users by ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan user in list: %w", err)
+		}
+		out = append(out, r.withAvatarURL(u))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate users by ids: %w", err)
+	}
+	return out, nil
+}
+
 // GetBySupabaseID returns the active user linked to a Supabase account.
 func (r *Repository) GetBySupabaseID(ctx context.Context, supabaseID string) (*User, error) {
 	row := r.db.QueryRow(ctx,

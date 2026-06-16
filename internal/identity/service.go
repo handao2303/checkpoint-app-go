@@ -22,6 +22,7 @@ var (
 // consumer side, for easy mocking in tests).
 type repository interface {
 	GetByID(ctx context.Context, id string) (*User, error)
+	GetByIDs(ctx context.Context, ids []string) ([]*User, error)
 	GetBySupabaseID(ctx context.Context, supabaseID string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	CreateUser(ctx context.Context, p CreateUserParams) (*User, error)
@@ -118,6 +119,11 @@ func (s *Service) GetByID(ctx context.Context, id string) (*User, error) {
 // GetByUsername returns a public profile by username.
 func (s *Service) GetByUsername(ctx context.Context, username string) (*User, error) {
 	return s.repo.GetByUsername(ctx, username)
+}
+
+// GetByIDs returns a list of users by their IDs.
+func (s *Service) GetByIDs(ctx context.Context, ids []string) ([]*User, error) {
+	return s.repo.GetByIDs(ctx, ids)
 }
 
 // Follow makes followerID follow the user with followeeUsername. Returns

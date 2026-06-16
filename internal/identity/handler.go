@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -37,6 +38,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(auth).Post("/me/avatar", h.UploadAvatar)
 		// Static /following must precede /{username} so it isn't read as a username.
 		r.With(auth).Get("/following", h.GetFollowing)
+		r.With(optionalAuth).Get("/by-ids", h.GetByIDs)
 		// Public profile (shared) — optional auth.
 		r.With(optionalAuth).Get("/{username}", h.GetByUsername)
 		r.With(auth).Post("/{username}/follow", h.Follow)
@@ -168,6 +170,25 @@ func (h *Handler) GetByUsername(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, user)
+}
+
+// GetByIDs returns a list of public user profiles by their IDs.
+func (h *Handler) GetByIDs(w http.ResponseWriter, r *http.Request) {
+	idsParam := r.URL.Query().Get("ids")
+	if idsParam == "" {
+		respond.JSON(w, http.StatusOK, []*User{})
+		return
+	}
+	ids := strings.Split(idsParam, ",")
+	for i := range ids {
+		ids[i] = strings.TrimSpace(ids[i])
+	}
+	users, err := h.svc.GetByIDs(r.Context(), ids)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not fetch users")
+		return
+	}
+	respond.JSON(w, http.StatusOK, users)
 }
 
 // GetFollowing returns the ids of users the caller follows.
