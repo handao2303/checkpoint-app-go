@@ -68,10 +68,16 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 	}
 
 	image := frontendURL + "/icon-512.png"
-	if detail.Checkpoint.ImageURL != nil && *detail.Checkpoint.ImageURL != "" {
+	if detail.Checkpoint.ThumbnailURL != nil && *detail.Checkpoint.ThumbnailURL != "" {
+		image = *detail.Checkpoint.ThumbnailURL
+	} else if detail.Checkpoint.ImageURL != nil && *detail.Checkpoint.ImageURL != "" {
 		image = *detail.Checkpoint.ImageURL
 	} else if len(detail.Images) > 0 {
-		image = detail.Images[0].URL
+		if detail.Images[0].ThumbnailURL != nil && *detail.Images[0].ThumbnailURL != "" {
+			image = *detail.Images[0].ThumbnailURL
+		} else {
+			image = detail.Images[0].URL
+		}
 	}
 
 	return &MetaData{
@@ -111,7 +117,10 @@ func (s *Service) GetJourneyMeta(ctx context.Context, id, frontendURL string) (*
 
 	image := frontendURL + "/icon-512.png"
 	for _, cp := range detail.Checkpoints {
-		if cp.ImageURL != nil && *cp.ImageURL != "" {
+		if cp.ThumbnailURL != nil && *cp.ThumbnailURL != "" {
+			image = *cp.ThumbnailURL
+			break
+		} else if cp.ImageURL != nil && *cp.ImageURL != "" {
 			image = *cp.ImageURL
 			break
 		}
