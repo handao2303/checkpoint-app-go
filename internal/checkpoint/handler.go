@@ -52,6 +52,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(auth).Get("/nearby", h.ListNearby)
 		r.With(auth).Get("/me", h.ListMine)
 		r.With(auth, uploadSlotsRL).Post("/upload-slots", h.PrepareSlots)
+		r.With(auth, uploadSlotsRL).Post("/video", h.TranscodeVideo)
 		r.With(auth).Post("/{id}/images", h.UploadImages)
 		r.With(auth).Post("/{id}/upload-urls", h.GetUploadURLs)
 		r.With(auth).Post("/{id}/images/link", h.LinkImages)
@@ -323,6 +324,60 @@ func (h *Handler) UploadImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusCreated, map[string]any{"images": images})
+}
+
+// TranscodeVideo accepts a raw (any-format) video via multipart, transcodes it
+// to MP4 server-side, stores it with its client-generated thumbnail, and returns
+// the R2 keys for the client to include in POST /checkpoints. Conversion runs
+// here because many browsers cannot produce MP4. Multipart fields: "video"
+// (required), "thumbnail" (optional, jpeg).
+func (h *Handler) TranscodeVideo(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxVideoInputBytes+(4<<20))
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+	files := r.MultipartForm.File["video"]
+	if len(files) == 0 {
+		respond.Error(w, http.StatusBadRequest, "video file is required")
+		return
+	}
+	f, err := files[0].Open()
+	if err != nil {
+		respond.Error(w, http.StatusBadRequest, "could not read video")
+		return
+	}
+	defer func() { _ = f.Close() }()
+
+	upload := VideoUpload{Body: f}
+	if thumbs := r.MultipartForm.File["thumbnail"]; len(thumbs) > 0 {
+		tf, terr := thumbs[0].Open()
+		if terr != nil {
+			respond.Error(w, http.StatusBadRequest, "could not read thumbnail")
+			return
+		}
+		defer func() { _ = tf.Close() }()
+		upload.ThumbnailContentType = thumbs[0].Header.Get("Content-Type")
+		upload.ThumbnailBody = tf
+	}
+
+	keys, err := h.svc.PrepareVideo(r.Context(), upload)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTranscodeUnavailable):
+			respond.Error(w, http.StatusServiceUnavailable, "máy chủ chưa sẵn sàng xử lý video. Vui lòng thử lại sau.")
+		case errors.Is(err, ErrInvalidInput):
+			respond.Error(w, http.StatusBadRequest, err.Error())
+		default:
+			respond.Error(w, http.StatusInternalServerError, "could not process video")
+		}
+		return
+	}
+	resp := map[string]any{"object_key": keys.ObjectKey, "type": MediaTypeVideo}
+	if keys.ThumbnailKey != nil {
+		resp["thumbnail_key"] = *keys.ThumbnailKey
+	}
+	respond.JSON(w, http.StatusCreated, resp)
 }
 
 // GetUploadURLs issues presigned R2 PUT URLs so the client can upload images
