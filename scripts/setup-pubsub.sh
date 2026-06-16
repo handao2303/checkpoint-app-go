@@ -147,7 +147,8 @@ if gcloud pubsub subscriptions describe "$SUBSCRIPTION" --project "$PROJECT_ID" 
     --push-auth-service-account="$PUSH_SA" \
     --ack-deadline="$ACK_DEADLINE" \
     --dead-letter-topic="$DLQ_TOPIC" \
-    --max-delivery-attempts="$MAX_DELIVERY_ATTEMPTS"
+    --max-delivery-attempts="$MAX_DELIVERY_ATTEMPTS" \
+    --expiration-period=never
   echo "    updated $SUBSCRIPTION"
 else
   retry gcloud pubsub subscriptions create "$SUBSCRIPTION" \
@@ -157,7 +158,8 @@ else
     --push-auth-service-account="$PUSH_SA" \
     --ack-deadline="$ACK_DEADLINE" \
     --dead-letter-topic="$DLQ_TOPIC" \
-    --max-delivery-attempts="$MAX_DELIVERY_ATTEMPTS"
+    --max-delivery-attempts="$MAX_DELIVERY_ATTEMPTS" \
+    --expiration-period=never
 fi
 
 # Dead-letter forwarding needs the Pub/Sub agent to publish to the DLQ topic and
