@@ -31,6 +31,7 @@ import (
 	"github.com/quanluon/checkpoint-app/internal/locationiq"
 	"github.com/quanluon/checkpoint-app/internal/place"
 	"github.com/quanluon/checkpoint-app/internal/reaction"
+	"github.com/quanluon/checkpoint-app/internal/share"
 	appmw "github.com/quanluon/checkpoint-app/pkg/middleware"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
@@ -126,9 +127,13 @@ func run() error {
 	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo))
 	placeHandler := place.NewHandler(place.NewService(placeRepo))
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
-	journeyHandler := journey.NewHandler(journey.NewService(journeyRepo))
-	cpHandler := checkpoint.NewHandler(
-		checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient), r2, journeyRepo))
+	journeySvc := journey.NewService(journeyRepo)
+	journeyHandler := journey.NewHandler(journeySvc)
+	cpSvc := checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient), r2, journeyRepo)
+	cpHandler := checkpoint.NewHandler(cpSvc)
+
+	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc)
+	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL)
 	var driveHandler *gdrive.Handler
 	var driveSyncer *gdrive.Syncer
 	if cfg.drive.clientID != "" {
@@ -215,6 +220,7 @@ func run() error {
 	journeyHandler.Register(r, authenticated, optionalAuth)
 	gamificationHandler.Register(r, authenticated)
 	googlePlacesHandler.Register(r, authenticated)
+	shareHandler.Register(r)
 	if driveHandler != nil {
 		driveHandler.Register(r, authenticated)
 	}
@@ -278,6 +284,7 @@ type config struct {
 	r2           storage.R2Config
 	rateLimit    appmw.RateLimitConfig
 	placesAPIKey string
+	frontendURL  string
 	drive        driveConfig
 	photos       photosConfig
 }
@@ -302,6 +309,7 @@ func loadConfig() (config, error) {
 			Enabled: boolEnv("RATE_LIMIT_ENABLED", true),
 		},
 		placesAPIKey: os.Getenv("LOCATIONIQ_API_KEY"),
+		frontendURL:  getEnv("FRONTEND_URL", "http://localhost:5173"),
 		drive: driveConfig{
 			clientID:     os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
 			clientSecret: os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
