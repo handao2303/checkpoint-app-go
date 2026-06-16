@@ -26,7 +26,11 @@ const (
 	maxMapLimit      = 500
 	defaultRadiusM   = 5000
 	maxRadiusM       = 50000
-	maxImages        = 10
+	maxImages        = 3
+	maxVideos        = 1
+	maxMedia         = maxImages + maxVideos
+	MediaTypeImage   = "image"
+	MediaTypeVideo   = "video"
 )
 
 // repository is the data layer the service depends on (consumer-side interface
@@ -73,104 +77,93 @@ func NewService(repo repository, storage fileStorage, journeys journeyValidator)
 
 // Input is the user-supplied data for a check-in (before validation).
 type Input struct {
-        Name         string
-        Category     string
-        Note         *string
-        Rating       *int16
-        Lat          float64
-        Lng          float64
-        Address      *string
-        Province     *string
-        ProvinceCode *string
-        PlaceID      *string
-        JourneyID    *string
-        // Images are keys for files already uploaded directly to R2. Required (≥1).
-        Images []ImageKeys
+	Name         string
+	Category     string
+	Note         *string
+	Rating       *int16
+	Lat          float64
+	Lng          float64
+	Address      *string
+	Province     *string
+	ProvinceCode *string
+	PlaceID      *string
+	JourneyID    *string
+	// Images are media keys already uploaded directly to R2. Required (≥1).
+	Images []ImageKeys
 }
 
 // Create validates input and creates a checkpoint, awarding XP.
 func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateResult, error) {
-        name := strings.TrimSpace(in.Name)
-        if name == "" {
-                return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
-        }
-        if in.Lat < -90 || in.Lat > 90 || in.Lng < -180 || in.Lng > 180 {
-                return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
-        }
-        if in.Rating != nil && (*in.Rating < 1 || *in.Rating > 5) {
-                return nil, fmt.Errorf("%w: rating must be 1..5", ErrInvalidInput)
-        }
-        if len(in.Images) < 1 {
-                return nil, fmt.Errorf("%w: ít nhất 1 ảnh", ErrInvalidInput)
-        }
-        if len(in.Images) > maxImages {
-                return nil, fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
-        }
-        for _, img := range in.Images {
-                if !strings.HasPrefix(img.ObjectKey, "checkpoints/") {
-                        return nil, fmt.Errorf("%w: invalid image key", ErrInvalidInput)
-                }
-                if img.ThumbnailKey != nil && !strings.HasPrefix(*img.ThumbnailKey, "checkpoints/") {
-                        return nil, fmt.Errorf("%w: invalid thumbnail key", ErrInvalidInput)
-                }
-        }
-        category := strings.TrimSpace(in.Category)
-        if category == "" {
-                category = "other"
-        }
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if in.Lat < -90 || in.Lat > 90 || in.Lng < -180 || in.Lng > 180 {
+		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
+	}
+	if in.Rating != nil && (*in.Rating < 1 || *in.Rating > 5) {
+		return nil, fmt.Errorf("%w: rating must be 1..5", ErrInvalidInput)
+	}
+	if err := validateMediaKeys(in.Images); err != nil {
+		return nil, err
+	}
+	category := strings.TrimSpace(in.Category)
+	if category == "" {
+		category = "other"
+	}
 
-        // Attach to the journey the user picked (the client chooses one of their
-        // active journeys). Validate ownership so a check-in can't be slipped into
-        // someone else's journey; if it isn't theirs, just leave it unattached.
-        journeyID := in.JourneyID
-        if journeyID != nil && s.journeys != nil {
-                if ok, err := s.journeys.BelongsToUser(ctx, userID, *journeyID); err != nil || !ok {
-                        journeyID = nil
-                }
-        }
+	// Attach to the journey the user picked (the client chooses one of their
+	// active journeys). Validate ownership so a check-in can't be slipped into
+	// someone else's journey; if it isn't theirs, just leave it unattached.
+	journeyID := in.JourneyID
+	if journeyID != nil && s.journeys != nil {
+		if ok, err := s.journeys.BelongsToUser(ctx, userID, *journeyID); err != nil || !ok {
+			journeyID = nil
+		}
+	}
 
-        // Address and province are resolved by the client (lib/bigdatacloud.ts) before
-        // submit, so the server just sanitizes and stores what it receives.
-        address := in.Address
-        if address != nil {
-                trimmed := strings.TrimSpace(*address)
-                if trimmed == "" {
-                        address = nil
-                } else {
-                        address = &trimmed
-                }
-        }
+	// Address and province are resolved by the client (lib/bigdatacloud.ts) before
+	// submit, so the server just sanitizes and stores what it receives.
+	address := in.Address
+	if address != nil {
+		trimmed := strings.TrimSpace(*address)
+		if trimmed == "" {
+			address = nil
+		} else {
+			address = &trimmed
+		}
+	}
 
-        var province *string
-        if in.Province != nil {
-                if p := strings.TrimSpace(*in.Province); p != "" {
-                        province = &p
-                }
-        }
+	var province *string
+	if in.Province != nil {
+		if p := strings.TrimSpace(*in.Province); p != "" {
+			province = &p
+		}
+	}
 
-        var provinceCode *string
-        if in.ProvinceCode != nil {
-                if p := strings.TrimSpace(*in.ProvinceCode); p != "" {
-                        provinceCode = &p
-                }
-        }
+	var provinceCode *string
+	if in.ProvinceCode != nil {
+		if p := strings.TrimSpace(*in.ProvinceCode); p != "" {
+			provinceCode = &p
+		}
+	}
 
-        return s.repo.Create(ctx, CreateParams{
-                UserID:       userID,
-                Name:         name,
-                Category:     category,
-                Note:         in.Note,
-                Rating:       in.Rating,
-                Lat:          in.Lat,
-                Lng:          in.Lng,
-                Address:      address,
-                Province:     province,
-                ProvinceCode: provinceCode,
-                PlaceID:      in.PlaceID,
-                JourneyID:    journeyID,
-                XPReward:     checkinXP,
-                Images:       in.Images,
-        })
+	return s.repo.Create(ctx, CreateParams{
+		UserID:       userID,
+		Name:         name,
+		Category:     category,
+		Note:         in.Note,
+		Rating:       in.Rating,
+		Lat:          in.Lat,
+		Lng:          in.Lng,
+		Address:      address,
+		Province:     province,
+		ProvinceCode: provinceCode,
+		PlaceID:      in.PlaceID,
+		JourneyID:    journeyID,
+		XPReward:     checkinXP,
+		Images:       in.Images,
+	})
 }
 
 // GetDetail returns a checkpoint with images and author.
@@ -219,10 +212,109 @@ type ImageUpload struct {
 	ThumbnailBody        io.Reader
 }
 
-// ImageKeys are the stored original and optional thumbnail for one photo.
+// ImageKeys are the stored original and optional thumbnail for one media item.
 type ImageKeys struct {
 	ObjectKey    string
 	ThumbnailKey *string
+	Type         string
+}
+
+func normalizeMediaType(t string) (string, error) {
+	switch strings.TrimSpace(t) {
+	case "", MediaTypeImage:
+		return MediaTypeImage, nil
+	case MediaTypeVideo:
+		return MediaTypeVideo, nil
+	default:
+		return "", fmt.Errorf("%w: invalid media type", ErrInvalidInput)
+	}
+}
+
+func normalizeMediaTypes(count int, types []string) ([]string, error) {
+	if count < 1 || count > maxMedia {
+		return nil, fmt.Errorf("%w: count must be 1–%d", ErrInvalidInput, maxMedia)
+	}
+	if len(types) > count {
+		return nil, fmt.Errorf("%w: media types exceed count", ErrInvalidInput)
+	}
+	mediaTypes := make([]string, count)
+	for i := range mediaTypes {
+		t := MediaTypeImage
+		if i < len(types) {
+			var err error
+			t, err = normalizeMediaType(types[i])
+			if err != nil {
+				return nil, err
+			}
+		}
+		mediaTypes[i] = t
+	}
+	if err := validateMediaTypeCounts(mediaTypes); err != nil {
+		return nil, err
+	}
+	return mediaTypes, nil
+}
+
+func validateMediaTypeCounts(types []string) error {
+	var images, videos int
+	for _, t := range types {
+		switch t {
+		case MediaTypeImage:
+			images++
+		case MediaTypeVideo:
+			videos++
+		default:
+			return fmt.Errorf("%w: invalid media type", ErrInvalidInput)
+		}
+	}
+	if images > maxImages {
+		return fmt.Errorf("%w: tối đa %d ảnh/checkpoint", ErrInvalidInput, maxImages)
+	}
+	if videos > maxVideos {
+		return fmt.Errorf("%w: tối đa %d video/checkpoint", ErrInvalidInput, maxVideos)
+	}
+	if images+videos == 0 {
+		return fmt.Errorf("%w: ít nhất 1 ảnh hoặc video", ErrInvalidInput)
+	}
+	return nil
+}
+
+func validateMediaKeys(keys []ImageKeys) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("%w: ít nhất 1 ảnh hoặc video", ErrInvalidInput)
+	}
+	if len(keys) > maxMedia {
+		return fmt.Errorf("%w: tối đa %d media/checkpoint", ErrInvalidInput, maxMedia)
+	}
+	types := make([]string, len(keys))
+	for i, item := range keys {
+		t, err := normalizeMediaType(item.Type)
+		if err != nil {
+			return err
+		}
+		keys[i].Type = t
+		types[i] = t
+		if !strings.HasPrefix(item.ObjectKey, "checkpoints/") {
+			return fmt.Errorf("%w: invalid media key", ErrInvalidInput)
+		}
+		lowerKey := strings.ToLower(item.ObjectKey)
+		if t == MediaTypeImage && !strings.HasSuffix(lowerKey, ".jpg") && !strings.HasSuffix(lowerKey, ".jpeg") {
+			return fmt.Errorf("%w: image key must be jpg", ErrInvalidInput)
+		}
+		if t == MediaTypeVideo && !strings.HasSuffix(lowerKey, ".mp4") {
+			return fmt.Errorf("%w: video key must be mp4", ErrInvalidInput)
+		}
+		if item.ThumbnailKey != nil {
+			thumb := strings.ToLower(*item.ThumbnailKey)
+			if !strings.HasPrefix(*item.ThumbnailKey, "checkpoints/") {
+				return fmt.Errorf("%w: invalid thumbnail key", ErrInvalidInput)
+			}
+			if !strings.HasSuffix(thumb, ".jpg") && !strings.HasSuffix(thumb, ".jpeg") {
+				return fmt.Errorf("%w: thumbnail key must be jpg", ErrInvalidInput)
+			}
+		}
+	}
+	return validateMediaTypeCounts(types)
 }
 
 // AddImages uploads images to a checkpoint the caller owns and returns them.
@@ -268,6 +360,7 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 				return fmt.Errorf("upload image: %w", err)
 			}
 			keys[i].ObjectKey = storedKey
+			keys[i].Type = MediaTypeImage
 			if uploads[i].ThumbnailBody != nil {
 				if thumbExt := imageExt(uploads[i].ThumbnailContentType); thumbExt != "" {
 					thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s%s", checkpointID, randHex(8), thumbExt)
@@ -302,16 +395,21 @@ const presignTTL = 300 // seconds
 // PrepareSlots generates presigned R2 PUT URLs before the checkpoint exists.
 // The client uploads files directly to R2, then includes the returned keys in
 // the POST /checkpoints body — creating the checkpoint and linking images atomically.
-func (s *Service) PrepareSlots(_ context.Context, _ string, count int) ([]UploadSlot, error) {
-	if count < 1 || count > maxImages {
-		return nil, fmt.Errorf("%w: count must be 1–%d", ErrInvalidInput, maxImages)
+func (s *Service) PrepareSlots(_ context.Context, _ string, count int, types []string) ([]UploadSlot, error) {
+	mediaTypes, err := normalizeMediaTypes(count, types)
+	if err != nil {
+		return nil, err
 	}
 	// Use a random 16-byte prefix so keys are unguessable. The checkpoint ID
 	// (assigned by the DB) will differ — the service validates "checkpoints/" prefix.
 	prefix := randHex(16)
 	slots := make([]UploadSlot, count)
 	for i := range slots {
-		objKey := fmt.Sprintf("checkpoints/%s/%s.jpg", prefix, randHex(8))
+		ext := ".jpg"
+		if mediaTypes[i] == MediaTypeVideo {
+			ext = ".mp4"
+		}
+		objKey := fmt.Sprintf("checkpoints/%s/%s%s", prefix, randHex(8), ext)
 		thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s.jpg", prefix, randHex(8))
 		slots[i] = UploadSlot{
 			UploadURL:          s.storage.PresignUpload(objKey, presignTTL),

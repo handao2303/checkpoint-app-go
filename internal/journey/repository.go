@@ -224,7 +224,8 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 
 	rows, err := r.db.Query(ctx,
 		`SELECT c.id, c.name, c.category, c.note, c.address, c.lat, c.lng,
-		        c.place_id, c.created_at, c.image_key, c.thumbnail_key
+		        c.place_id, c.created_at, c.image_key, c.thumbnail_key,
+		        CASE WHEN c.image_key ILIKE '%.mp4' THEN 'video' WHEN c.image_key IS NOT NULL THEN 'image' ELSE NULL END
 		 FROM checkpoints c
 		 WHERE c.journey_id = $1 AND c.deleted_at IS NULL ORDER BY c.created_at`, id)
 	if err != nil {
@@ -236,7 +237,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		var s Stop
 		var imageKey, thumbnailKey *string
 		if err := rows.Scan(&s.ID, &s.Name, &s.Category, &s.Note, &s.Address,
-			&s.Lat, &s.Lng, &s.PlaceID, &s.CreatedAt, &imageKey, &thumbnailKey); err != nil {
+			&s.Lat, &s.Lng, &s.PlaceID, &s.CreatedAt, &imageKey, &thumbnailKey, &s.MediaType); err != nil {
 			return nil, fmt.Errorf("scan stop: %w", err)
 		}
 		if imageKey != nil {

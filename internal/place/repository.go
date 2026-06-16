@@ -160,7 +160,7 @@ func (r *Repository) recentImages(ctx context.Context, placeID string, limit int
 	rows, err := r.db.Query(ctx,
 		`SELECT ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key) FROM checkpoint_images ci
 		 JOIN checkpoints c ON c.id = ci.checkpoint_id
-		 WHERE c.place_id = $1 AND c.deleted_at IS NULL
+		 WHERE c.place_id = $1 AND c.deleted_at IS NULL AND ci.media_type = 'image'
 		 ORDER BY ci.created_at DESC LIMIT $2`, placeID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("place images: %w", err)
@@ -207,7 +207,8 @@ func (r *Repository) Popular(ctx context.Context, near *Point, radiusM float64, 
 const feedSelect = `c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
 	c.place_id, c.xp_awarded, c.created_at,
 	u.username, u.display_name, u.avatar_key,
-	c.image_key, c.thumbnail_key`
+	c.image_key, c.thumbnail_key,
+	CASE WHEN c.image_key ILIKE '%.mp4' THEN 'video' WHEN c.image_key IS NOT NULL THEN 'image' ELSE NULL END`
 
 const feedFirstPageQuery = `SELECT ` + feedSelect + `
 	FROM checkpoints c JOIN users u ON u.id = c.user_id
@@ -254,7 +255,7 @@ func (r *Repository) scanFeedRows(rows pgx.Rows, limit int, userLng, userLat flo
 		if err := rows.Scan(
 			&it.ID, &it.UserID, &it.Name, &it.Category, &it.Note, &it.Rating, &it.Lat, &it.Lng, &it.Address,
 			&it.PlaceID, &it.XPAwarded, &it.CreatedAt,
-			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &thumbnailKey,
+			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &thumbnailKey, &it.MediaType,
 		); err != nil {
 			return nil, fmt.Errorf("scan feed item: %w", err)
 		}

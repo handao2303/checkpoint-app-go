@@ -41,6 +41,7 @@ type Stop struct {
 	PlaceID      *string   `json:"place_id,omitempty"`
 	ImageURL     *string   `json:"image_url,omitempty"`
 	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	MediaType    *string   `json:"media_type,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 

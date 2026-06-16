@@ -80,7 +80,7 @@ func ratingPtr(v int16) *int16   { return &v }
 func stringPtr(v string) *string { return &v }
 
 // testImages is a minimal valid Images slice for tests that don't care about images.
-var testImages = []ImageKeys{{ObjectKey: "checkpoints/test/abc12345.jpg"}}
+var testImages = []ImageKeys{{ObjectKey: "checkpoints/test/abc12345.jpg", Type: MediaTypeImage}}
 
 func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	repo := &fakeRepo{}
@@ -123,24 +123,24 @@ func TestServiceCreate_StoresClientAddress(t *testing.T) {
 }
 
 func TestServiceCreate_StoresClientProvinceCode(t *testing.T) {
-        repo := &fakeRepo{}
-        prov := "Thành phố Hồ Chí Minh"
-        code := "VN-SG"
+	repo := &fakeRepo{}
+	prov := "Thành phố Hồ Chí Minh"
+	code := "VN-SG"
 
-        if _, err := NewService(repo, nil, nil).Create(
-                context.Background(),
-                "user1",
-                Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Province: &prov, ProvinceCode: &code, Images: testImages},
-        ); err != nil {
-                t.Fatalf("unexpected error: %v", err)
-        }
+	if _, err := NewService(repo, nil, nil).Create(
+		context.Background(),
+		"user1",
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, Province: &prov, ProvinceCode: &code, Images: testImages},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-        if repo.lastCreate.Province == nil || *repo.lastCreate.Province != prov {
-                t.Fatalf("Province = %v, want %q", repo.lastCreate.Province, prov)
-        }
-        if repo.lastCreate.ProvinceCode == nil || *repo.lastCreate.ProvinceCode != code {
-                t.Fatalf("ProvinceCode = %v, want %q", repo.lastCreate.ProvinceCode, code)
-        }
+	if repo.lastCreate.Province == nil || *repo.lastCreate.Province != prov {
+		t.Fatalf("Province = %v, want %q", repo.lastCreate.Province, prov)
+	}
+	if repo.lastCreate.ProvinceCode == nil || *repo.lastCreate.ProvinceCode != code {
+		t.Fatalf("ProvinceCode = %v, want %q", repo.lastCreate.ProvinceCode, code)
+	}
 }
 
 func TestServiceCreate_HandlesBlankAddress(t *testing.T) {
@@ -179,6 +179,99 @@ func TestServiceCreate_Validation(t *testing.T) {
 				t.Error("repo.Create should not be called on invalid input")
 			}
 		})
+	}
+}
+
+func TestServiceCreate_AcceptsThreeImagesAndOneVideo(t *testing.T) {
+	repo := &fakeRepo{}
+	images := []ImageKeys{
+		{ObjectKey: "checkpoints/test/a.jpg", Type: MediaTypeImage},
+		{ObjectKey: "checkpoints/test/b.jpg", Type: MediaTypeImage},
+		{ObjectKey: "checkpoints/test/c.jpg", Type: MediaTypeImage},
+		{ObjectKey: "checkpoints/test/d.mp4", ThumbnailKey: stringPtr("checkpoints/test/thumbnails/d.jpg"), Type: MediaTypeVideo},
+	}
+	if _, err := NewService(repo, nil, nil).Create(
+		context.Background(), "u", Input{Name: "Quán", Lat: 10, Lng: 106, Images: images}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(repo.lastCreate.Images) != 4 {
+		t.Fatalf("Images = %d, want 4", len(repo.lastCreate.Images))
+	}
+	if repo.lastCreate.Images[3].Type != MediaTypeVideo {
+		t.Fatalf("video type = %q, want %q", repo.lastCreate.Images[3].Type, MediaTypeVideo)
+	}
+}
+
+func TestServiceCreate_DefaultsMissingMediaTypeToImage(t *testing.T) {
+	repo := &fakeRepo{}
+	if _, err := NewService(repo, nil, nil).Create(
+		context.Background(), "u", Input{Name: "Quán", Lat: 10, Lng: 106, Images: []ImageKeys{{ObjectKey: "checkpoints/test/a.jpg"}}}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.lastCreate.Images[0].Type != MediaTypeImage {
+		t.Fatalf("Type = %q, want %q", repo.lastCreate.Images[0].Type, MediaTypeImage)
+	}
+}
+
+func TestServiceCreate_RejectsMediaLimitsAndTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		images []ImageKeys
+	}{
+		{
+			name: "four images",
+			images: []ImageKeys{
+				{ObjectKey: "checkpoints/test/a.jpg"},
+				{ObjectKey: "checkpoints/test/b.jpg"},
+				{ObjectKey: "checkpoints/test/c.jpg"},
+				{ObjectKey: "checkpoints/test/d.jpg"},
+			},
+		},
+		{
+			name: "two videos",
+			images: []ImageKeys{
+				{ObjectKey: "checkpoints/test/a.mp4", Type: MediaTypeVideo},
+				{ObjectKey: "checkpoints/test/b.mp4", Type: MediaTypeVideo},
+			},
+		},
+		{
+			name:   "unknown type",
+			images: []ImageKeys{{ObjectKey: "checkpoints/test/a.jpg", Type: "gif"}},
+		},
+		{
+			name:   "video key must be mp4",
+			images: []ImageKeys{{ObjectKey: "checkpoints/test/a.jpg", Type: MediaTypeVideo}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			_, err := NewService(repo, nil, nil).Create(
+				context.Background(), "u", Input{Name: "Quán", Lat: 10, Lng: 106, Images: tt.images})
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("err = %v, want ErrInvalidInput", err)
+			}
+			if repo.lastCreate != nil {
+				t.Fatal("repo.Create should not be called")
+			}
+		})
+	}
+}
+
+func TestServicePrepareSlots_MediaExtensions(t *testing.T) {
+	svc := NewService(nil, &fakeStorage{}, nil)
+	slots, err := svc.PrepareSlots(context.Background(), "u", 2, []string{MediaTypeImage, MediaTypeVideo})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.HasSuffix(slots[0].ObjectKey, ".jpg") {
+		t.Fatalf("image key = %q, want .jpg", slots[0].ObjectKey)
+	}
+	if !strings.HasSuffix(slots[1].ObjectKey, ".mp4") {
+		t.Fatalf("video key = %q, want .mp4", slots[1].ObjectKey)
+	}
+	if !strings.HasSuffix(slots[1].ThumbnailKey, ".jpg") {
+		t.Fatalf("thumbnail key = %q, want .jpg", slots[1].ThumbnailKey)
 	}
 }
 

@@ -78,6 +78,7 @@ type FeedItem struct {
 	Author       Author    `json:"author"`
 	ImageURL     *string   `json:"image_url,omitempty"`
 	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
+	MediaType    *string   `json:"media_type,omitempty"`
 	DistanceM    float64   `json:"distance_m"`
 }
 

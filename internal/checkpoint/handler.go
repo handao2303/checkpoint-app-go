@@ -60,20 +60,21 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 }
 
 type createRequest struct {
-	Name      string  `json:"name"`
-	Category  string  `json:"category"`
-	Note      *string `json:"note"`
-	Rating    *int16  `json:"rating"`
-	Lat       float64 `json:"lat"`
-	Lng       float64 `json:"lng"`
+	Name         string  `json:"name"`
+	Category     string  `json:"category"`
+	Note         *string `json:"note"`
+	Rating       *int16  `json:"rating"`
+	Lat          float64 `json:"lat"`
+	Lng          float64 `json:"lng"`
 	Address      *string `json:"address"`
 	Province     *string `json:"province"`
 	ProvinceCode *string `json:"province_code"`
 	PlaceID      *string `json:"place_id"`
-	JourneyID *string `json:"journey_id"`
-	Images    []struct {
+	JourneyID    *string `json:"journey_id"`
+	Images       []struct {
 		ObjectKey    string  `json:"object_key"`
 		ThumbnailKey *string `json:"thumbnail_key"`
+		Type         string  `json:"type"`
 	} `json:"images"`
 }
 
@@ -86,27 +87,27 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Images) == 0 {
-		respond.Error(w, http.StatusBadRequest, "ít nhất 1 ảnh")
+		respond.Error(w, http.StatusBadRequest, "ít nhất 1 ảnh hoặc video")
 		return
 	}
 	images := make([]ImageKeys, len(req.Images))
 	for i, img := range req.Images {
-		images[i] = ImageKeys{ObjectKey: img.ObjectKey, ThumbnailKey: img.ThumbnailKey}
+		images[i] = ImageKeys{ObjectKey: img.ObjectKey, ThumbnailKey: img.ThumbnailKey, Type: img.Type}
 	}
 	result, err := h.svc.Create(r.Context(), p.UserID, Input{
-		Name:      req.Name,
-		Category:  req.Category,
-		Note:      req.Note,
-		Rating:    req.Rating,
-		Lat:       req.Lat,
-		Lng:       req.Lng,
+		Name:         req.Name,
+		Category:     req.Category,
+		Note:         req.Note,
+		Rating:       req.Rating,
+		Lat:          req.Lat,
+		Lng:          req.Lng,
 		Address:      req.Address,
 		Province:     req.Province,
 		ProvinceCode: req.ProvinceCode,
 		PlaceID:      req.PlaceID,
 		JourneyID:    req.JourneyID,
 		Images:       images,
-		})
+	})
 	if err != nil {
 		if errors.Is(err, ErrInvalidInput) {
 			respond.Error(w, http.StatusBadRequest, err.Error())
@@ -117,33 +118,49 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(result.Images) > 0 {
-		imageURLs := make([]string, len(result.Images))
-		for i, img := range result.Images {
-			imageURLs[i] = img.URL
+		imageURLs := make([]string, 0, len(result.Images))
+		for _, img := range result.Images {
+			if img.Type == MediaTypeImage {
+				imageURLs = append(imageURLs, img.URL)
+			}
 		}
-		cp := result.Checkpoint
-		h.syncer.SyncCheckpoint(p.UserID, cloudsync.CheckpointMeta{
-			ID: cp.ID, Name: cp.Name, Lat: cp.Lat, Lng: cp.Lng,
-			Address: cp.Address, Rating: cp.Rating, Note: cp.Note,
-			Category: cp.Category, CreatedAt: cp.CreatedAt, ImageURLs: imageURLs,
-		})
+		if h.syncer != nil && len(imageURLs) > 0 {
+			cp := result.Checkpoint
+			h.syncer.SyncCheckpoint(p.UserID, cloudsync.CheckpointMeta{
+				ID: cp.ID, Name: cp.Name, Lat: cp.Lat, Lng: cp.Lng,
+				Address: cp.Address, Rating: cp.Rating, Note: cp.Note,
+				Category: cp.Category, CreatedAt: cp.CreatedAt, ImageURLs: imageURLs,
+			})
+		}
 	}
 
 	respond.JSON(w, http.StatusCreated, result)
 }
 
-// PrepareSlots issues presigned R2 PUT URLs for the client to upload images
-// before creating the checkpoint. Body: { "count": N } (1 ≤ N ≤ 10).
+// PrepareSlots issues presigned R2 PUT URLs for the client to upload media
+// before creating the checkpoint. New body: { "media": [{"type":"image"}] }.
+// Legacy body { "count": N } is treated as N images.
 func (h *Handler) PrepareSlots(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	var req struct {
 		Count int `json:"count"`
+		Media []struct {
+			Type string `json:"type"`
+		} `json:"media"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Count < 1 || req.Count > maxImages {
-		respond.Error(w, http.StatusBadRequest, "count must be 1–10")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	slots, err := h.svc.PrepareSlots(r.Context(), p.UserID, req.Count)
+	count := req.Count
+	types := make([]string, 0, len(req.Media))
+	if len(req.Media) > 0 {
+		count = len(req.Media)
+		for _, item := range req.Media {
+			types = append(types, item.Type)
+		}
+	}
+	slots, err := h.svc.PrepareSlots(r.Context(), p.UserID, count, types)
 	if err != nil {
 		if errors.Is(err, ErrInvalidInput) {
 			respond.Error(w, http.StatusBadRequest, err.Error())
@@ -318,7 +335,7 @@ func (h *Handler) GetUploadURLs(w http.ResponseWriter, r *http.Request) {
 		Count int `json:"count"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Count < 1 || req.Count > maxImages {
-		respond.Error(w, http.StatusBadRequest, "count must be 1–10")
+		respond.Error(w, http.StatusBadRequest, "count must be 1–3")
 		return
 	}
 	slots, err := h.svc.PrepareUploads(r.Context(), chi.URLParam(r, "id"), p.UserID, req.Count)
@@ -345,6 +362,7 @@ func (h *Handler) LinkImages(w http.ResponseWriter, r *http.Request) {
 		Images []struct {
 			ObjectKey    string  `json:"object_key"`
 			ThumbnailKey *string `json:"thumbnail_key"`
+			Type         string  `json:"type"`
 		} `json:"images"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.Images) == 0 {
@@ -353,7 +371,7 @@ func (h *Handler) LinkImages(w http.ResponseWriter, r *http.Request) {
 	}
 	keys := make([]ImageKeys, len(req.Images))
 	for i, img := range req.Images {
-		keys[i] = ImageKeys{ObjectKey: img.ObjectKey, ThumbnailKey: img.ThumbnailKey}
+		keys[i] = ImageKeys{ObjectKey: img.ObjectKey, ThumbnailKey: img.ThumbnailKey, Type: MediaTypeImage}
 	}
 	images, err := h.svc.LinkImages(r.Context(), chi.URLParam(r, "id"), p.UserID, keys)
 	if err != nil {

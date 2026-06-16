@@ -53,13 +53,28 @@ func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver, xp 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
 	place_id, journey_id, xp_awarded, view_count, created_at, updated_at`
 
-// cpListColumns extends cpColumns with denormalized cover image fields.
-const cpListColumns = cpColumns + `, image_key, thumbnail_key`
+// cpListColumns extends cpColumns with denormalized cover media fields.
+const cpListColumns = cpColumns + `, image_key, thumbnail_key,
+	CASE WHEN image_key ILIKE '%.mp4' THEN 'video' WHEN image_key IS NOT NULL THEN 'image' ELSE NULL END AS media_type`
 
 // viewTTL keeps a checkpoint's hot view counter warm in Redis.
 const viewTTL = 7 * 24 * time.Hour
 
 func viewKey(id string) string { return "views:" + id }
+
+func mediaTypeOrDefault(t string) string {
+	if t == MediaTypeVideo {
+		return MediaTypeVideo
+	}
+	return MediaTypeImage
+}
+
+func mediaTypeOrDefaultPtr(t *string) string {
+	if t == nil {
+		return MediaTypeImage
+	}
+	return mediaTypeOrDefault(*t)
+}
 
 func (r *Repository) viewCount(ctx context.Context, id string) <-chan *int {
 	result := make(chan *int, 1)
@@ -108,10 +123,10 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}
 
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-	        `INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, xp_awarded)
+		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, xp_awarded)
 	         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	         RETURNING `+cpColumns,
-	        p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.XPReward))
+		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.XPReward))
 	if err != nil {
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}
@@ -168,6 +183,7 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	for i, key := range p.Images {
 		images[i] = Image{
 			URL:       storage.PublicURL(r.mediaBase, key.ObjectKey),
+			Type:      mediaTypeOrDefault(key.Type),
 			SortOrder: i,
 		}
 		if key.ThumbnailKey != nil {
@@ -202,9 +218,9 @@ func updateStreakTx(ctx context.Context, tx pgx.Tx, userID string) error {
 func insertImagesTx(ctx context.Context, tx pgx.Tx, checkpointID string, keys []ImageKeys) error {
 	for i, key := range keys {
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO checkpoint_images (checkpoint_id, object_key, thumbnail_key, sort_order)
-			 VALUES ($1, $2, $3, $4)`,
-			checkpointID, key.ObjectKey, key.ThumbnailKey, i); err != nil {
+			`INSERT INTO checkpoint_images (checkpoint_id, object_key, thumbnail_key, media_type, sort_order)
+			 VALUES ($1, $2, $3, $4, $5)`,
+			checkpointID, key.ObjectKey, key.ThumbnailKey, mediaTypeOrDefault(key.Type), i); err != nil {
 			return fmt.Errorf("insert image row: %w", err)
 		}
 	}
@@ -282,11 +298,11 @@ func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
 	var out []*Checkpoint
 	for rows.Next() {
 		var c Checkpoint
-		var imageKey, thumbnailKey *string
+		var imageKey, thumbnailKey, mediaType *string
 		if err := rows.Scan(
 			&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
 			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.CreatedAt, &c.UpdatedAt,
-			&imageKey, &thumbnailKey,
+			&imageKey, &thumbnailKey, &mediaType,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint: %w", err)
 		}
@@ -298,6 +314,7 @@ func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
 			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
 			c.ThumbnailURL = &u
 		}
+		c.MediaType = mediaType
 		out = append(out, &c)
 	}
 	return out, rows.Err()
@@ -315,7 +332,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.created_at, c.updated_at,
 		        c.image_key, c.thumbnail_key,
 		        u.username, u.display_name, u.avatar_key,
-		        ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key), ci.sort_order
+		        ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key), ci.media_type, ci.sort_order
 		 FROM checkpoints c
 		 JOIN users u ON u.id = c.user_id
 		 LEFT JOIN checkpoint_images ci ON ci.checkpoint_id = c.id
@@ -332,13 +349,14 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		var author Author
 		var imageID, objectKey, thumbnailKey *string
 		var cpImageKey, cpThumbnailKey *string
+		var mediaType *string
 		var sortOrder *int
 		if err := rows.Scan(
 			&cp.ID, &cp.UserID, &cp.Name, &cp.Category, &cp.Note, &cp.Rating, &cp.Lat, &cp.Lng,
 			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.CreatedAt, &cp.UpdatedAt,
 			&cpImageKey, &cpThumbnailKey,
 			&author.Username, &author.DisplayName, &author.AvatarURL,
-			&imageID, &objectKey, &thumbnailKey, &sortOrder,
+			&imageID, &objectKey, &thumbnailKey, &mediaType, &sortOrder,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint detail: %w", err)
 		}
@@ -361,7 +379,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		}
 
 		if imageID != nil {
-			img := Image{ID: *imageID, URL: *objectKey, SortOrder: *sortOrder}
+			img := Image{ID: *imageID, URL: *objectKey, Type: mediaTypeOrDefaultPtr(mediaType), SortOrder: *sortOrder}
 			img.URL = storage.PublicURL(r.mediaBase, img.URL)
 			thumbnailURL := storage.PublicURL(r.mediaBase, *thumbnailKey)
 			img.ThumbnailURL = &thumbnailURL
@@ -390,7 +408,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 // ListImages returns a checkpoint's images ordered by sort_order.
 func (r *Repository) ListImages(ctx context.Context, checkpointID string) ([]Image, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, object_key, COALESCE(thumbnail_key, object_key), sort_order FROM checkpoint_images
+		`SELECT id, object_key, COALESCE(thumbnail_key, object_key), media_type, sort_order FROM checkpoint_images
 		 WHERE checkpoint_id = $1 ORDER BY sort_order, created_at`, checkpointID)
 	if err != nil {
 		return nil, fmt.Errorf("list images: %w", err)
@@ -401,7 +419,7 @@ func (r *Repository) ListImages(ctx context.Context, checkpointID string) ([]Ima
 	for rows.Next() {
 		var img Image
 		var thumbnailKey string
-		if err := rows.Scan(&img.ID, &img.URL, &thumbnailKey, &img.SortOrder); err != nil {
+		if err := rows.Scan(&img.ID, &img.URL, &thumbnailKey, &img.Type, &img.SortOrder); err != nil {
 			return nil, fmt.Errorf("scan image: %w", err)
 		}
 		img.URL = storage.PublicURL(r.mediaBase, img.URL)
@@ -420,10 +438,10 @@ func (r *Repository) AddImages(ctx context.Context, checkpointID string, keys []
 		var img Image
 		var thumbnailKey *string
 		if err := r.db.QueryRow(ctx,
-			`INSERT INTO checkpoint_images (checkpoint_id, object_key, thumbnail_key, sort_order)
-			 VALUES ($1, $2, $3, $4) RETURNING id, object_key, thumbnail_key, sort_order`,
-			checkpointID, key.ObjectKey, key.ThumbnailKey, startOrder+i).
-			Scan(&img.ID, &img.URL, &thumbnailKey, &img.SortOrder); err != nil {
+			`INSERT INTO checkpoint_images (checkpoint_id, object_key, thumbnail_key, media_type, sort_order)
+			 VALUES ($1, $2, $3, $4, $5) RETURNING id, object_key, thumbnail_key, media_type, sort_order`,
+			checkpointID, key.ObjectKey, key.ThumbnailKey, mediaTypeOrDefault(key.Type), startOrder+i).
+			Scan(&img.ID, &img.URL, &thumbnailKey, &img.Type, &img.SortOrder); err != nil {
 			return nil, fmt.Errorf("insert image: %w", err)
 		}
 		img.URL = storage.PublicURL(r.mediaBase, img.URL)
