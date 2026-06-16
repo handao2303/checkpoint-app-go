@@ -307,7 +307,6 @@ jobs:
       R2_ACCESS_KEY_SECRET: ${{ secrets.R2_ACCESS_KEY_SECRET }}
       R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
       R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL }}
-      WORKER_PUSH_TOKEN: ${{ secrets.WORKER_PUSH_TOKEN }}
 
     steps:
       - name: Checkout
@@ -336,15 +335,13 @@ jobs:
             --arg R2_ACCESS_KEY_SECRET "$R2_ACCESS_KEY_SECRET" \
             --arg R2_BUCKET_NAME "$R2_BUCKET_NAME" \
             --arg R2_PUBLIC_URL "$R2_PUBLIC_URL" \
-            --arg WORKER_PUSH_TOKEN "$WORKER_PUSH_TOKEN" \
             '{
               DATABASE_URL: $DATABASE_URL,
               R2_ACCOUNT_ID: $R2_ACCOUNT_ID,
               R2_ACCESS_KEY_ID: $R2_ACCESS_KEY_ID,
               R2_ACCESS_KEY_SECRET: $R2_ACCESS_KEY_SECRET,
               R2_BUCKET_NAME: $R2_BUCKET_NAME,
-              R2_PUBLIC_URL: $R2_PUBLIC_URL,
-              WORKER_PUSH_TOKEN: $WORKER_PUSH_TOKEN
+              R2_PUBLIC_URL: $R2_PUBLIC_URL
             }' > "$worker_env"
 
           if ! jq -e 'all(.[]; type == "string")' "$worker_env" >/dev/null; then

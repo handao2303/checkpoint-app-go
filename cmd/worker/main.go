@@ -45,9 +45,6 @@ func run() error {
 	if port == "" {
 		port = "8080"
 	}
-	// Optional shared secret: when set, push requests must carry ?token=<value>.
-	// Defence-in-depth on top of Cloud Run IAM (which is the primary auth).
-	pushToken := os.Getenv("WORKER_PUSH_TOKEN")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -89,7 +86,7 @@ func run() error {
 		respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("/internal/process", func(w http.ResponseWriter, r *http.Request) {
-		handleProcess(w, r, processor, pushToken)
+		handleProcess(w, r, processor)
 	})
 
 	srv := &http.Server{
@@ -131,13 +128,12 @@ type pushRequest struct {
 	Subscription string `json:"subscription"`
 }
 
-func handleProcess(w http.ResponseWriter, r *http.Request, processor *checkpoint.Processor, pushToken string) {
+// handleProcess handles a Pub/Sub push delivery. The endpoint is secured by
+// Cloud Run IAM (only the Pub/Sub push service account can invoke it), so no
+// app-level auth is needed here.
+func handleProcess(w http.ResponseWriter, r *http.Request, processor *checkpoint.Processor) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if pushToken != "" && r.URL.Query().Get("token") != pushToken {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 
@@ -166,6 +162,7 @@ func handleProcess(w http.ResponseWriter, r *http.Request, processor *checkpoint
 		return
 	}
 
+	log.Printf("worker: received job for checkpoint %s (msg %s)", job.CheckpointID, push.Message.MessageID)
 	if err := processor.ProcessCheckpoint(r.Context(), job.CheckpointID); err != nil {
 		// Transient — return 5xx so Pub/Sub redelivers (rows still pending, so the
 		// retry is idempotent). Persistent failures drain to the dead-letter topic.
@@ -173,5 +170,6 @@ func handleProcess(w http.ResponseWriter, r *http.Request, processor *checkpoint
 		http.Error(w, "processing failed", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("worker: done checkpoint %s", job.CheckpointID)
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -13,7 +13,7 @@
 # Usage:
 #   ./scripts/setup-pubsub.sh
 #   PROJECT_ID=cert-learn REGION=us-central1 ./scripts/setup-pubsub.sh
-#   WORKER_PUSH_TOKEN=secret ./scripts/setup-pubsub.sh   # adds ?token=... to the push URL
+#   (the worker endpoint is secured by Cloud Run IAM — no shared token needed)
 
 set -euo pipefail
 
@@ -28,7 +28,6 @@ API_SERVICE="${API_SERVICE:-checkpoint-api}"
 PUSH_SA_NAME="${PUSH_SA_NAME:-pubsub-pusher}"
 ACK_DEADLINE="${ACK_DEADLINE:-120}"
 MAX_DELIVERY_ATTEMPTS="${MAX_DELIVERY_ATTEMPTS:-5}"
-WORKER_PUSH_TOKEN="${WORKER_PUSH_TOKEN:-}" # optional shared secret on the push endpoint
 
 if [[ -z "$PROJECT_ID" ]]; then
   echo "::error:: PROJECT_ID is not set and no gcloud default project is configured." >&2
@@ -84,18 +83,20 @@ gcloud beta services identity create --service=pubsub.googleapis.com \
   --project "$PROJECT_ID" >/dev/null 2>&1 || true
 
 # ── 1. Worker URL (must already be deployed) ──────────────────────
-WORKER_URL="$(gcloud run services describe "$WORKER_SERVICE" \
+STATUS_URL="$(gcloud run services describe "$WORKER_SERVICE" \
   --project "$PROJECT_ID" --region "$REGION" \
   --format='value(status.url)' 2>/dev/null || true)"
-if [[ -z "$WORKER_URL" ]]; then
+if [[ -z "$STATUS_URL" ]]; then
   echo "::error:: Worker service '$WORKER_SERVICE' not found in $REGION." >&2
   echo "          Deploy it first: make deploy-worker" >&2
   exit 1
 fi
+# Cloud Run validates the OIDC token audience against the project-number URL form
+# (https://SERVICE-PROJECTNUMBER.REGION.run.app), even when status.url reports the
+# legacy hash URL (…-<hash>-<regioncode>.a.run.app) — using the hash URL as the
+# audience yields 401. Use the project-number form for both endpoint and audience.
+WORKER_URL="https://${WORKER_SERVICE}-${PROJECT_NUMBER}.${REGION}.run.app"
 PUSH_ENDPOINT="${WORKER_URL}/internal/process"
-if [[ -n "$WORKER_PUSH_TOKEN" ]]; then
-  PUSH_ENDPOINT="${PUSH_ENDPOINT}?token=${WORKER_PUSH_TOKEN}"
-fi
 echo "Worker URL:     $WORKER_URL"
 echo
 
@@ -145,6 +146,7 @@ if gcloud pubsub subscriptions describe "$SUBSCRIPTION" --project "$PROJECT_ID" 
     --project "$PROJECT_ID" \
     --push-endpoint="$PUSH_ENDPOINT" \
     --push-auth-service-account="$PUSH_SA" \
+    --push-auth-token-audience="$WORKER_URL" \
     --ack-deadline="$ACK_DEADLINE" \
     --dead-letter-topic="$DLQ_TOPIC" \
     --max-delivery-attempts="$MAX_DELIVERY_ATTEMPTS" \
@@ -156,6 +158,7 @@ else
     --topic="$TOPIC" \
     --push-endpoint="$PUSH_ENDPOINT" \
     --push-auth-service-account="$PUSH_SA" \
+    --push-auth-token-audience="$WORKER_URL" \
     --ack-deadline="$ACK_DEADLINE" \
     --dead-letter-topic="$DLQ_TOPIC" \
     --max-delivery-attempts="$MAX_DELIVERY_ATTEMPTS" \

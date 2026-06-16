@@ -261,8 +261,6 @@ Add:
 - `R2_ACCESS_KEY_ID`
 - `R2_ACCESS_KEY_SECRET`
 - `REDIS_URL`
-- `WORKER_PUSH_TOKEN` (optional — extra shared-secret check on the worker's
-  Pub/Sub push endpoint, on top of Cloud Run IAM)
 
 Do not add `GCP_SA_KEY`; WIF replaces long-lived JSON service account keys.
 Use a `redis://` or TLS `rediss://` connection URL from the existing Redis
@@ -309,11 +307,12 @@ everything below idempotently:
 
 ```bash
 PROJECT_ID=<your-project> ./scripts/setup-pubsub.sh
-# optional shared secret on the push endpoint:
-WORKER_PUSH_TOKEN=<secret> PROJECT_ID=<your-project> ./scripts/setup-pubsub.sh
 ```
 
-The equivalent manual steps, for reference:
+The script also grants the Pub/Sub service agent `serviceAccountTokenCreator` on the
+push SA and sets the OIDC audience to the worker's project-number URL
+(`https://<service>-<project-number>.<region>.run.app`) — Cloud Run rejects the
+legacy hash URL as an audience (401). The equivalent manual steps, for reference:
 
 ```bash
 export PROJECT_ID="<your-project>"
@@ -350,8 +349,9 @@ gcloud pubsub topics add-iam-policy-binding "$TOPIC" \
 
 The deploy SA needs `roles/run.sourceDeveloper`/`run.admin` for the worker service
 too (already covered if granted at project level in §5.2). The worker is private —
-only `pubsub-pusher` can invoke it (Cloud Run IAM). For defence-in-depth, set the
-`WORKER_PUSH_TOKEN` secret and append `?token=<value>` to the push endpoint URL.
+only `pubsub-pusher` can invoke it (Cloud Run IAM); that is the sole auth, no app
+token. Use `scripts/setup-pubsub.sh` rather than the steps above, since it also adds
+the token-creator grant + correct audience the manual block omits.
 
 ## 6. Operations and cost
 
