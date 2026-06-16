@@ -25,5 +25,11 @@ type CheckpointMeta struct {
 	Note      *string
 	Category  string
 	CreatedAt time.Time
-	ImageURLs []string // full public R2 URLs of the images to upload
+	Media     []Media // full public R2 URLs of the media files to upload
+}
+
+// Media is one original checkpoint media file.
+type Media struct {
+	URL  string
+	Type string
 }

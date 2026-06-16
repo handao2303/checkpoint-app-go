@@ -206,35 +206,38 @@ func (c *Client) EnsureAlbum(ctx context.Context, accessToken string) (string, e
 	return created.ID, nil
 }
 
-// UploadImage fetches the image from imageURL, uploads it to Google Photos
+// UploadMedia fetches the media from mediaURL, uploads it to Google Photos
 // under albumID, and returns the created media item ID.
 // description is embedded as the media item description (max 1000 chars).
-func (c *Client) UploadImage(ctx context.Context, accessToken, albumID, filename, imageURL, description string) (string, error) {
-	// Fetch image from R2.
-	imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+func (c *Client) UploadMedia(ctx context.Context, accessToken, albumID, filename, mediaURL, mediaType, description string) (string, error) {
+	// Fetch media from R2.
+	imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
 	if err != nil {
 		return "", err
 	}
 	imgResp, err := c.http.Do(imgReq)
 	if err != nil {
-		return "", fmt.Errorf("fetch image: %w", err)
+		return "", fmt.Errorf("fetch media: %w", err)
 	}
 	defer imgResp.Body.Close()
 	if imgResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch image status %d", imgResp.StatusCode)
+		return "", fmt.Errorf("fetch media status %d", imgResp.StatusCode)
 	}
 
-	imageBytes, err := io.ReadAll(imgResp.Body)
+	mediaBytes, err := io.ReadAll(imgResp.Body)
 	if err != nil {
-		return "", fmt.Errorf("read image: %w", err)
+		return "", fmt.Errorf("read media: %w", err)
 	}
 
 	// Step 1: upload raw bytes to get an upload token.
 	mimeType := imgResp.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "image/jpeg"
+		if mediaType == "video" {
+			mimeType = "video/mp4"
+		}
 	}
-	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(imageBytes))
+	upReq, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(mediaBytes))
 	if err != nil {
 		return "", err
 	}

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Syncer uploads checkpoint images to Google Photos in the background.
+// Syncer uploads checkpoint media to Google Photos in the background.
 // All public methods are nil-safe — call them even when Photos is not configured.
 type Syncer struct {
 	repo   *Repository
@@ -22,10 +22,10 @@ func NewSyncer(repo *Repository, client *Client) *Syncer {
 	return &Syncer{repo: repo, client: client}
 }
 
-// SyncCheckpoint uploads all images in cp to the user's Google Photos in a goroutine.
+// SyncCheckpoint uploads all media in cp to the user's Google Photos in a goroutine.
 // No-op if the user has not connected Photos or if the syncer is nil.
 func (s *Syncer) SyncCheckpoint(userID string, cp CheckpointMeta) {
-	if s == nil || len(cp.ImageURLs) == 0 {
+	if s == nil || len(cp.Media) == 0 {
 		return
 	}
 	go s.sync(userID, cp)
@@ -62,10 +62,10 @@ func (s *Syncer) sync(userID string, cp CheckpointMeta) {
 	}
 
 	description := buildDescription(cp)
-	for i, imgURL := range cp.ImageURLs {
-		filename := buildFilename(cp.Name, cp.CreatedAt, i)
-		if _, err := s.client.UploadImage(ctx, tokens.AccessToken, albumID, filename, imgURL, description); err != nil {
-			log.Printf("gphotos: upload image checkpoint=%s url=%s: %v", cp.ID, imgURL, err)
+	for i, media := range cp.Media {
+		filename := buildFilename(cp.Name, cp.CreatedAt, i, media.Type)
+		if _, err := s.client.UploadMedia(ctx, tokens.AccessToken, albumID, filename, media.URL, media.Type, description); err != nil {
+			log.Printf("gphotos: upload media checkpoint=%s url=%s: %v", cp.ID, media.URL, err)
 		}
 	}
 }
@@ -84,7 +84,7 @@ func (s *Syncer) ensureAlbum(ctx context.Context, tokens *Tokens) (string, error
 	return albumID, nil
 }
 
-func buildFilename(name string, t time.Time, idx int) string {
+func buildFilename(name string, t time.Time, idx int, mediaType string) string {
 	safe := strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == ' ' {
 			return r
@@ -96,7 +96,11 @@ func buildFilename(name string, t time.Time, idx int) string {
 	if idx > 0 {
 		suffix = "_" + strconv.Itoa(idx+1)
 	}
-	return fmt.Sprintf("%s_%s%s.jpg", safe, date, suffix)
+	ext := ".jpg"
+	if mediaType == "video" {
+		ext = ".mp4"
+	}
+	return fmt.Sprintf("%s_%s%s%s", safe, date, suffix, ext)
 }
 
 func buildDescription(cp CheckpointMeta) string {

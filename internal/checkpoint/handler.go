@@ -118,18 +118,16 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(result.Images) > 0 {
-		imageURLs := make([]string, 0, len(result.Images))
+		media := make([]cloudsync.Media, 0, len(result.Images))
 		for _, img := range result.Images {
-			if img.Type == MediaTypeImage {
-				imageURLs = append(imageURLs, img.URL)
-			}
+			media = append(media, cloudsync.Media{URL: img.URL, Type: img.Type})
 		}
-		if h.syncer != nil && len(imageURLs) > 0 {
+		if h.syncer != nil && len(media) > 0 {
 			cp := result.Checkpoint
 			h.syncer.SyncCheckpoint(p.UserID, cloudsync.CheckpointMeta{
 				ID: cp.ID, Name: cp.Name, Lat: cp.Lat, Lng: cp.Lng,
 				Address: cp.Address, Rating: cp.Rating, Note: cp.Note,
-				Category: cp.Category, CreatedAt: cp.CreatedAt, ImageURLs: imageURLs,
+				Category: cp.Category, CreatedAt: cp.CreatedAt, Media: media,
 			})
 		}
 	}

@@ -231,24 +231,24 @@ func (c *Client) EnsureFolder(ctx context.Context, accessToken string) (string, 
 	return created.ID, nil
 }
 
-// UploadImage fetches an image from imageURL and uploads it to Drive under
+// UploadMedia fetches a media file from mediaURL and uploads it to Drive under
 // folderID. metadata is embedded in the Drive file description as JSON.
-func (c *Client) UploadImage(ctx context.Context, accessToken, folderID, filename, imageURL string, metadata map[string]string) (string, error) {
-	// Fetch image from R2.
-	imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, imageURL, nil)
+func (c *Client) UploadMedia(ctx context.Context, accessToken, folderID, filename, mediaURL, mediaType string, metadata map[string]string) (string, error) {
+	// Fetch media from R2.
+	imgReq, err := http.NewRequestWithContext(ctx, http.MethodGet, mediaURL, nil)
 	if err != nil {
 		return "", err
 	}
 	imgResp, err := c.http.Do(imgReq)
 	if err != nil {
-		return "", fmt.Errorf("fetch image: %w", err)
+		return "", fmt.Errorf("fetch media: %w", err)
 	}
 	defer imgResp.Body.Close()
 	if imgResp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch image status %d", imgResp.StatusCode)
+		return "", fmt.Errorf("fetch media status %d", imgResp.StatusCode)
 	}
 
-	// Build multipart body: part 1 = metadata JSON, part 2 = image bytes.
+	// Build multipart body: part 1 = metadata JSON, part 2 = media bytes.
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
 
@@ -264,16 +264,19 @@ func (c *Client) UploadImage(ctx context.Context, accessToken, folderID, filenam
 	})
 	_, _ = metaPart.Write(metaJSON)
 
-	// Part 2: image bytes.
+	// Part 2: media bytes.
 	contentType := imgResp.Header.Get("Content-Type")
 	if contentType == "" {
 		contentType = "image/jpeg"
+		if mediaType == "video" {
+			contentType = "video/mp4"
+		}
 	}
 	imgPart, _ := mw.CreatePart(textproto.MIMEHeader{
 		"Content-Type": {contentType},
 	})
 	if _, err := io.Copy(imgPart, imgResp.Body); err != nil {
-		return "", fmt.Errorf("buffer image: %w", err)
+		return "", fmt.Errorf("buffer media: %w", err)
 	}
 	_ = mw.Close()
 

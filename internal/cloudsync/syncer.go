@@ -1,4 +1,4 @@
-// Package cloudsync fans out checkpoint image sync to all connected cloud
+// Package cloudsync fans out checkpoint media sync to all connected cloud
 // storage backends (Google Drive, Google Photos, …) through a single call.
 // Adding a new backend only requires wiring it here — callers are untouched.
 package cloudsync
@@ -20,7 +20,13 @@ type CheckpointMeta struct {
 	Note      *string
 	Category  string
 	CreatedAt time.Time
-	ImageURLs []string
+	Media     []Media
+}
+
+// Media is one original checkpoint media file to sync.
+type Media struct {
+	URL  string
+	Type string
 }
 
 // Syncer fans out SyncCheckpoint to every registered backend.
@@ -38,17 +44,23 @@ func New(drive *gdrive.Syncer, photos *gphotos.Syncer) *Syncer {
 // SyncCheckpoint dispatches to all backends concurrently (each backend fires
 // its own goroutine internally, so this call returns immediately).
 func (s *Syncer) SyncCheckpoint(userID string, cp CheckpointMeta) {
-	if s == nil || len(cp.ImageURLs) == 0 {
+	if s == nil || len(cp.Media) == 0 {
 		return
+	}
+	media := make([]gdrive.Media, 0, len(cp.Media))
+	photosMedia := make([]gphotos.Media, 0, len(cp.Media))
+	for _, item := range cp.Media {
+		media = append(media, gdrive.Media{URL: item.URL, Type: item.Type})
+		photosMedia = append(photosMedia, gphotos.Media{URL: item.URL, Type: item.Type})
 	}
 	s.drive.SyncCheckpoint(userID, gdrive.CheckpointMeta{
 		ID: cp.ID, Name: cp.Name, Lat: cp.Lat, Lng: cp.Lng,
 		Address: cp.Address, Rating: cp.Rating, Note: cp.Note,
-		Category: cp.Category, CreatedAt: cp.CreatedAt, ImageURLs: cp.ImageURLs,
+		Category: cp.Category, CreatedAt: cp.CreatedAt, Media: media,
 	})
 	s.photos.SyncCheckpoint(userID, gphotos.CheckpointMeta{
 		ID: cp.ID, Name: cp.Name, Lat: cp.Lat, Lng: cp.Lng,
 		Address: cp.Address, Rating: cp.Rating, Note: cp.Note,
-		Category: cp.Category, CreatedAt: cp.CreatedAt, ImageURLs: cp.ImageURLs,
+		Category: cp.Category, CreatedAt: cp.CreatedAt, Media: photosMedia,
 	})
 }
