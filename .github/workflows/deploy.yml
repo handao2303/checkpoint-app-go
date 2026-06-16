@@ -136,11 +136,9 @@ jobs:
       GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
       GOOGLE_PHOTOS_CLIENT_ID: ${{ secrets.GOOGLE_PHOTOS_CLIENT_ID }}
       GOOGLE_PHOTOS_CLIENT_SECRET: ${{ secrets.GOOGLE_PHOTOS_CLIENT_SECRET }}
-      # Async media pipeline. PUBSUB_TOPIC unset → API processes media inline and
-      # the worker deploy is skipped.
+      # Async media pipeline. PUBSUB_TOPIC unset → API processes media inline.
+      # The worker is deployed by the separate `deploy-worker` job (in parallel).
       PUBSUB_TOPIC: ${{ vars.PUBSUB_TOPIC }}
-      CLOUD_RUN_WORKER_SERVICE: ${{ vars.CLOUD_RUN_WORKER_SERVICE }}
-      WORKER_PUSH_TOKEN: ${{ secrets.WORKER_PUSH_TOKEN }}
 
     outputs:
       service_url: ${{ steps.service.outputs.url }}
@@ -274,22 +272,62 @@ jobs:
 
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
-      - name: Deploy media worker to Cloud Run
-        if: ${{ env.PUBSUB_TOPIC != '' }}
+      - name: Remove runtime environment file
+        if: always()
+        run: rm -f "$RUNNER_TEMP/runtime-env.json"
+
+      - name: Notify deploy result
+        if: always()
+        uses: ./.github/actions/telegram-notify
+        with:
+          bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
+          message: |
+            ${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}
+            ${{ job.status == 'success' && format(' → {0}', steps.service.outputs.url) || '' }}
+
+  deploy-worker:
+    name: Deploy media worker
+    needs: [notify-start, test, migrate]
+    # Runs in parallel with `deploy`. Skipped unless Pub/Sub is configured.
+    if: ${{ always() && needs.test.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') && vars.PUBSUB_TOPIC != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      WORKER_SERVICE: ${{ vars.CLOUD_RUN_WORKER_SERVICE }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_ACCESS_KEY_SECRET: ${{ secrets.R2_ACCESS_KEY_SECRET }}
+      R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
+      R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL }}
+      WORKER_PUSH_TOKEN: ${{ secrets.WORKER_PUSH_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Setup Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Deploy worker source to Cloud Run
         run: |
-          worker_service="${CLOUD_RUN_WORKER_SERVICE:-checkpoint-worker}"
+          worker_service="${WORKER_SERVICE:-checkpoint-worker}"
           worker_env="$RUNNER_TEMP/worker-env.json"
           trap 'rm -f "$worker_env"' EXIT
-
-          # Reuse the exact image just built for the API — same image ships both
-          # binaries; the worker only overrides the container command to /worker.
-          image="$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
-            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
-            --format='value(spec.template.spec.containers[0].image)')"
-          if [[ -z "$image" ]]; then
-            echo "::error::Could not resolve the API image for the worker"
-            exit 1
-          fi
 
           jq -n \
             --arg DATABASE_URL "$DATABASE_URL" \
@@ -308,33 +346,37 @@ jobs:
               R2_PUBLIC_URL: $R2_PUBLIC_URL,
               WORKER_PUSH_TOKEN: $WORKER_PUSH_TOKEN
             }' > "$worker_env"
+
+          if ! jq -e 'all(.[]; type == "string")' "$worker_env" >/dev/null; then
+            echo "::error::Worker environment file contains a non-string value"
+            exit 1
+          fi
           chmod 600 "$worker_env"
 
-          # Private service (Pub/Sub push SA invokes it via IAM — see DEPLOY.md §5.7).
+          # gcloud run deploy --source reads ./Dockerfile; the worker needs the
+          # ffmpeg image, so use Dockerfile.worker (safe — the checkout is
+          # ephemeral and separate from the parallel API job). The image's
+          # ENTRYPOINT is /worker, so no --command override is needed.
+          cp Dockerfile.worker Dockerfile
+
+          # Private — only the Pub/Sub push SA may invoke it (see DEPLOY.md §5.7).
           gcloud run deploy "$worker_service" \
             --project "$GCP_PROJECT_ID" \
             --region "$GCP_REGION" \
-            --image "$image" \
-            --command /worker \
+            --source . \
             --port 8080 \
             --no-allow-unauthenticated \
             --concurrency 4 --cpu 2 --memory 1Gi --timeout 300 --min-instances 0 \
             --env-vars-file "$worker_env" \
             --quiet
 
-      - name: Remove runtime environment file
-        if: always()
-        run: rm -f "$RUNNER_TEMP/runtime-env.json"
-
-      - name: Notify deploy result
+      - name: Notify worker deploy result
         if: always()
         uses: ./.github/actions/telegram-notify
         with:
           bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat_id: ${{ secrets.TELEGRAM_CHAT_ID }}
-          message: |
-            ${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}
-            ${{ job.status == 'success' && format(' → {0}', steps.service.outputs.url) || '' }}
+          message: "${{ job.status == 'success' && '✅' || '❌' }} <b>[Backend]</b> Worker deploy: ${{ job.status == 'success' && 'passed' || 'failed' }}"
 
   health-check:
     name: Health check

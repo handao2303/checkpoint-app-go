@@ -145,6 +145,8 @@ deploy: ## Build & deploy to Cloud Run (env vars from .env — no Secret Manager
 
 deploy-worker: ## Build & deploy the media worker to Cloud Run (env vars from .env)
 	@TMP=$$(mktemp); \
+	cp Dockerfile Dockerfile.api.bak; cp Dockerfile.worker Dockerfile; \
+	trap 'mv -f Dockerfile.api.bak Dockerfile 2>/dev/null; rm -f $$TMP' EXIT; \
 	{ \
 	  for key in $(WORKER_KEYS); do \
 	    val=$$(grep -E "^$$key=" .env | cut -d '=' -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
@@ -156,10 +158,9 @@ deploy-worker: ## Build & deploy the media worker to Cloud Run (env vars from .e
 	} > $$TMP; \
 	gcloud run deploy $(WORKER_SERVICE) \
 		--project $(PROJECT_ID) --region $(REGION) \
-		--source . --command /worker --no-allow-unauthenticated --port 8080 \
+		--source . --no-allow-unauthenticated --port 8080 \
 		--cpu 2 --memory 1Gi --timeout 300 --concurrency 4 --min-instances 0 \
-		--env-vars-file $$TMP; \
-	status=$$?; rm -f $$TMP; exit $$status
+		--env-vars-file $$TMP
 
 secrets-delete: ## Delete ALL Secret Manager secrets created earlier (stop incurring cost)
 	@for key in DATABASE_URL JWT_SECRET SUPABASE_URL SUPABASE_JWT_SECRET \

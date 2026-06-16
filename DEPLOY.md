@@ -77,8 +77,11 @@ instance.
 1. Run `go vet` and tests with race detection.
 2. Apply pending database migrations on pushes to `main`, or when selected in a
    manual run.
-3. Authenticate to GCP through WIF and deploy source to Cloud Run.
-4. Call the deployed service's `/health` endpoint.
+3. Authenticate to GCP through WIF and deploy to Cloud Run. The API (`deploy`) and
+   the media worker (`deploy-worker`) deploy **in parallel** — each builds its own
+   image from source. `deploy-worker` is skipped unless the `PUBSUB_TOPIC` variable
+   is set.
+4. Call the deployed API's `/health` endpoint.
 
 Production runs are serialized. A newer run waits for the current deployment
 instead of cancelling it.
@@ -290,8 +293,9 @@ the service's current public/private access policy unchanged.
 
 Video uploads are processed asynchronously: the API publishes a job to Pub/Sub
 after a check-in is created, and a separate Cloud Run service (`checkpoint-worker`)
-transcodes the raw video to MP4 + cuts a thumbnail. Both binaries ship in the same
-image — the worker service just overrides the container command to `/worker`.
+transcodes the raw video to MP4 + cuts a thumbnail. The worker has its own image
+(`Dockerfile.worker`) — same Go build, but the runtime adds `ffmpeg`, so the API
+image stays slim.
 
 **The deploy workflow builds and deploys the worker automatically** (reusing the
 API's image, no second build) whenever the `PUBSUB_TOPIC` repository variable is

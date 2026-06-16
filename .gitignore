@@ -1,2 +1,4 @@
 .env
 !.env.example
+# Temp backup created by `make deploy-worker` while swapping in Dockerfile.worker.
+Dockerfile.api.bak

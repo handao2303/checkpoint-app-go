@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+#
+# Media worker image — identical to the API build but the runtime adds ffmpeg
+# (for video → MP4 transcoding) and runs the /worker binary. Kept separate so the
+# API image stays slim. `gcloud run deploy --source` always reads ./Dockerfile,
+# so the worker deploy (CI job + `make deploy-worker`) copies this over it first.
+
+# Stage 1: Build the worker binary.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /app/worker ./cmd/worker
+
+# Stage 2: Runtime — ffmpeg only here.
+FROM alpine:3.20
+
+# ca-certificates cho HTTPS; ffmpeg để transcode video; appuser cho bảo mật.
+RUN apk add --no-cache ca-certificates ffmpeg \
+  && adduser -D -u 10001 appuser
+
+COPY --from=build /app/worker /worker
+
+USER appuser
+EXPOSE 8080
+ENTRYPOINT ["/worker"]
