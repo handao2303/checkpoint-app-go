@@ -26,14 +26,12 @@ var shareTemplate = template.Must(template.New("share").Parse(`<!DOCTYPE html>
     <meta name="twitter:title" content="{{.Title}}">
     <meta name="twitter:description" content="{{.Description}}">
     <meta name="twitter:image" content="{{.Image}}">
-    <!-- Meta refresh fallback -->
-    <meta http-equiv="refresh" content="0;url={{.RedirectURL}}">
     <script>
-        window.location.href = "{{.RedirectURL}}";
+        window.location.replace("{{.RedirectURL}}");
     </script>
 </head>
 <body>
-    <p>Đang chuyển hướng tới ứng dụng Checkpoint...</p>
+    <p>Đang chuyển hướng tới ứng dụng Checkpoint... Nếu không tự động chuyển hướng, vui lòng <a href="{{.RedirectURL}}">bấm vào đây</a>.</p>
 </body>
 </html>`))
 
@@ -114,6 +112,8 @@ func isCrawler(ua string) bool {
 	ua = strings.ToLower(ua)
 	crawlers := []string{
 		"facebookexternalhit",
+		"facebook",
+		"facebot",
 		"twitterbot",
 		"linkedinbot",
 		"telegrambot",

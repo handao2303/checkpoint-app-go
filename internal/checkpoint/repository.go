@@ -313,6 +313,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 	rows, err := r.db.Query(ctx,
 		`SELECT c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
 		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.created_at, c.updated_at,
+		        c.image_key, c.thumbnail_key,
 		        u.username, u.display_name, u.avatar_key,
 		        ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key), ci.sort_order
 		 FROM checkpoints c
@@ -330,10 +331,12 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		var cp Checkpoint
 		var author Author
 		var imageID, objectKey, thumbnailKey *string
+		var cpImageKey, cpThumbnailKey *string
 		var sortOrder *int
 		if err := rows.Scan(
 			&cp.ID, &cp.UserID, &cp.Name, &cp.Category, &cp.Note, &cp.Rating, &cp.Lat, &cp.Lng,
 			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.CreatedAt, &cp.UpdatedAt,
+			&cpImageKey, &cpThumbnailKey,
 			&author.Username, &author.DisplayName, &author.AvatarURL,
 			&imageID, &objectKey, &thumbnailKey, &sortOrder,
 		); err != nil {
@@ -344,6 +347,14 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 			if author.AvatarURL != nil {
 				url := storage.PublicURL(r.mediaBase, *author.AvatarURL)
 				author.AvatarURL = &url
+			}
+			if cpImageKey != nil {
+				url := storage.PublicURL(r.mediaBase, *cpImageKey)
+				cp.ImageURL = &url
+			}
+			if cpThumbnailKey != nil {
+				url := storage.PublicURL(r.mediaBase, *cpThumbnailKey)
+				cp.ThumbnailURL = &url
 			}
 			detail.Checkpoint = &cp
 			detail.Author = &author

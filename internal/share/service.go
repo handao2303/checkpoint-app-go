@@ -68,7 +68,9 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 	}
 
 	image := frontendURL + "/icon-512.png"
-	if len(detail.Images) > 0 {
+	if detail.Checkpoint.ImageURL != nil && *detail.Checkpoint.ImageURL != "" {
+		image = *detail.Checkpoint.ImageURL
+	} else if len(detail.Images) > 0 {
 		image = detail.Images[0].URL
 	}
 
