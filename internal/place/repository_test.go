@@ -23,7 +23,7 @@ func TestFeedQueriesUseIndexFriendlyKeysetPagination(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			hasCursor := strings.Contains(tt.query, "(c.created_at, c.id) < ($3, $4)")
+			hasCursor := strings.Contains(tt.query, "(c.created_at, c.id) < ($1, $2)")
 			if hasCursor != tt.wantCursor {
 				t.Fatalf("cursor predicate present = %v, want %v", hasCursor, tt.wantCursor)
 			}

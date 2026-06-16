@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // PlaceSuggestion is a nearby place returned to the check-in form for auto-fill.
@@ -22,6 +24,7 @@ type PlaceSuggestion struct {
 // Client calls LocationIQ Nearby Places API and caches results by rounded location.
 type Client struct {
 	apiKey string
+	redis  redis.Cmdable
 	cache  map[string]cacheEntry
 	mu     sync.RWMutex
 	http   *http.Client
@@ -42,9 +45,10 @@ const (
 )
 
 // NewClient creates a Client. When apiKey is empty, Search always returns [].
-func NewClient(apiKey string) *Client {
+func NewClient(apiKey string, rClient redis.Cmdable) *Client {
 	return &Client{
 		apiKey: apiKey,
+		redis:  rClient,
 		cache:  make(map[string]cacheEntry),
 		http:   &http.Client{Timeout: 5 * time.Second},
 	}
@@ -83,26 +87,43 @@ func (c *Client) Search(ctx context.Context, lat, lng float64) []PlaceSuggestion
 		return []PlaceSuggestion{}
 	}
 
-	key := cacheKey(lat, lng)
+	key := fmt.Sprintf("places:suggest:%s", cacheKey(lat, lng))
 
-	c.mu.RLock()
-	entry, hit := c.cache[key]
-	c.mu.RUnlock()
-	if hit && time.Now().Before(entry.expiresAt) {
-		return entry.results
+	if c.redis != nil {
+		val, err := c.redis.Get(ctx, key).Result()
+		if err == nil {
+			var results []PlaceSuggestion
+			if err := json.Unmarshal([]byte(val), &results); err == nil {
+				return results
+			}
+		}
+	} else {
+		c.mu.RLock()
+		entry, hit := c.cache[key]
+		c.mu.RUnlock()
+		if hit && time.Now().Before(entry.expiresAt) {
+			return entry.results
+		}
 	}
 
 	results := c.fetchFromAPI(ctx, lat, lng)
 
-	c.mu.Lock()
-	if len(c.cache) >= cacheMax {
-		for k := range c.cache {
-			delete(c.cache, k)
-			break
+	if c.redis != nil {
+		data, err := json.Marshal(results)
+		if err == nil {
+			_ = c.redis.Set(ctx, key, data, cacheTTL).Err()
 		}
+	} else {
+		c.mu.Lock()
+		if len(c.cache) >= cacheMax {
+			for k := range c.cache {
+				delete(c.cache, k)
+				break
+			}
+		}
+		c.cache[key] = cacheEntry{results: results, expiresAt: time.Now().Add(cacheTTL)}
+		c.mu.Unlock()
 	}
-	c.cache[key] = cacheEntry{results: results, expiresAt: time.Now().Add(cacheTTL)}
-	c.mu.Unlock()
 
 	return results
 }

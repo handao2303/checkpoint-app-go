@@ -133,7 +133,7 @@ func run() error {
 	cpHandler := checkpoint.NewHandler(cpSvc)
 
 	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc)
-	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL)
+	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL, redisClient)
 	var driveHandler *gdrive.Handler
 	var driveSyncer *gdrive.Syncer
 	if cfg.drive.clientID != "" {
@@ -153,7 +153,7 @@ func run() error {
 	cpHandler.WithCloudSyncer(cloudsync.New(driveSyncer, photosSyncer))
 	checkpointHandler := cpHandler
 	reactionHandler := reaction.NewHandler(reaction.NewService(reaction.NewRepository(pool)))
-	googlePlacesHandler := locationiq.NewHandler(locationiq.NewClient(cfg.placesAPIKey))
+	googlePlacesHandler := locationiq.NewHandler(locationiq.NewClient(cfg.placesAPIKey, redisClient))
 
 	corsOpts := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
@@ -180,7 +180,7 @@ func run() error {
 	r := chi.NewRouter()
 	r.Use(cors.Handler(corsOpts))
 	r.Use(chimw.RequestID, chimw.Logger, chimw.Recoverer)
-	var ipLimiterOpts, userLimiterOpts, checkinLimiterOpts []appmw.RateLimiterOption
+	var ipLimiterOpts, userLimiterOpts, checkinLimiterOpts, uploadSlotsLimiterOpts []appmw.RateLimiterOption
 	if redisClient != nil {
 		store := appmw.NewRedisRateLimitStore(redisClient, cfg.rateLimit)
 		ipLimiterOpts = append(ipLimiterOpts, appmw.WithRateLimitStore(store, "checkpoint:rate-limit:ip:"))
@@ -191,6 +191,12 @@ func run() error {
 			Burst:             5,
 		})
 		checkinLimiterOpts = append(checkinLimiterOpts, appmw.WithRateLimitStore(checkinStore, "checkpoint:rate-limit:checkin:"))
+		uploadSlotsStore := appmw.NewRedisRateLimitStore(redisClient, appmw.RateLimitConfig{
+			Enabled:           cfg.rateLimit.Enabled,
+			RequestsPerMinute: 15,
+			Burst:             15,
+		})
+		uploadSlotsLimiterOpts = append(uploadSlotsLimiterOpts, appmw.WithRateLimitStore(uploadSlotsStore, "checkpoint:rate-limit:upload-slots:"))
 	}
 	ipLimiter := appmw.NewRateLimiter(cfg.rateLimit, ipLimiterOpts...)
 	userLimiter := appmw.NewRateLimiter(cfg.rateLimit, userLimiterOpts...)
@@ -200,6 +206,12 @@ func run() error {
 		RequestsPerMinute: 5,
 		Burst:             5,
 	}, checkinLimiterOpts...)
+	// POST /checkpoints/upload-slots: 15 requests per minute per user.
+	uploadSlotsLimiter := appmw.NewRateLimiter(appmw.RateLimitConfig{
+		Enabled:           cfg.rateLimit.Enabled,
+		RequestsPerMinute: 15,
+		Burst:             15,
+	}, uploadSlotsLimiterOpts...)
 	r.Use(ipLimiter.ByIP)
 	r.Use(chimw.Timeout(30 * time.Second))
 
@@ -214,7 +226,7 @@ func run() error {
 	// anonymous access — used for public share/discover read endpoints.
 	optionalAuth := appmw.OptionalAuth(tokens)
 	identityHandler.Register(r, authenticated, optionalAuth)
-	checkpointHandler.Register(r, authenticated, optionalAuth, checkinLimiter.ByUser)
+	checkpointHandler.Register(r, authenticated, optionalAuth, checkinLimiter.ByUser, uploadSlotsLimiter.ByUser)
 	reactionHandler.Register(r, authenticated, optionalAuth)
 	placeHandler.Register(r, authenticated, optionalAuth)
 	journeyHandler.Register(r, authenticated, optionalAuth)

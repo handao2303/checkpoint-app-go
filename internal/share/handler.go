@@ -1,12 +1,16 @@
 package share
 
 import (
+	"context"
+	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
 )
 
 var shareTemplate = template.Must(template.New("share").Parse(`<!DOCTYPE html>
@@ -39,13 +43,15 @@ var shareTemplate = template.Must(template.New("share").Parse(`<!DOCTYPE html>
 type Handler struct {
 	svc         *Service
 	frontendURL string
+	redis       redis.Cmdable
 }
 
 // NewHandler constructs a new Share Handler.
-func NewHandler(svc *Service, frontendURL string) *Handler {
+func NewHandler(svc *Service, frontendURL string, rClient redis.Cmdable) *Handler {
 	return &Handler{
 		svc:         svc,
 		frontendURL: frontendURL,
+		redis:       rClient,
 	}
 }
 
@@ -56,10 +62,41 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/share/user/{username}", h.ShareUser)
 }
 
+const shareCacheTTL = 10 * time.Minute
+
+func (h *Handler) getCachedMeta(ctx context.Context, key string, fetch func() (*MetaData, error)) (*MetaData, error) {
+	if h.redis != nil {
+		val, err := h.redis.Get(ctx, key).Result()
+		if err == nil {
+			var meta MetaData
+			if err := json.Unmarshal([]byte(val), &meta); err == nil {
+				return &meta, nil
+			}
+		}
+	}
+
+	meta, err := fetch()
+	if err != nil {
+		return nil, err
+	}
+
+	if h.redis != nil {
+		data, err := json.Marshal(meta)
+		if err == nil {
+			_ = h.redis.Set(ctx, key, data, shareCacheTTL).Err()
+		}
+	}
+
+	return meta, nil
+}
+
 // ShareCheckpoint handles checkpoint share links.
 func (h *Handler) ShareCheckpoint(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	meta, err := h.svc.GetCheckpointMeta(r.Context(), id, h.frontendURL)
+	key := "share:meta:checkpoint:" + id
+	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
+		return h.svc.GetCheckpointMeta(r.Context(), id, h.frontendURL)
+	})
 	if err != nil {
 		log.Printf("share: error getting checkpoint meta: %v", err)
 		http.Redirect(w, r, h.frontendURL+"/c/"+id, http.StatusFound)
@@ -72,7 +109,10 @@ func (h *Handler) ShareCheckpoint(w http.ResponseWriter, r *http.Request) {
 // ShareJourney handles journey share links.
 func (h *Handler) ShareJourney(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	meta, err := h.svc.GetJourneyMeta(r.Context(), id, h.frontendURL)
+	key := "share:meta:journey:" + id
+	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
+		return h.svc.GetJourneyMeta(r.Context(), id, h.frontendURL)
+	})
 	if err != nil {
 		log.Printf("share: error getting journey meta: %v", err)
 		http.Redirect(w, r, h.frontendURL+"/j/"+id, http.StatusFound)
@@ -85,7 +125,10 @@ func (h *Handler) ShareJourney(w http.ResponseWriter, r *http.Request) {
 // ShareUser handles user profile share links.
 func (h *Handler) ShareUser(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
-	meta, err := h.svc.GetUserMeta(r.Context(), username, h.frontendURL)
+	key := "share:meta:user:" + username
+	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
+		return h.svc.GetUserMeta(r.Context(), username, h.frontendURL)
+	})
 	if err != nil {
 		log.Printf("share: error getting user profile meta: %v", err)
 		http.Redirect(w, r, h.frontendURL+"/u/"+username, http.StatusFound)

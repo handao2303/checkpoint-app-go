@@ -39,7 +39,7 @@ func (h *Handler) WithCloudSyncer(s *cloudsync.Syncer) *Handler {
 // Register mounts checkpoint routes under /checkpoints. Most require auth;
 // the share-page reads ({id}, by-user, {id}/view) use optionalAuth so anonymous
 // visitors can view shared checkpoints. checkinRL is applied only to POST /.
-func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler, checkinRL func(http.Handler) http.Handler) {
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler, checkinRL, uploadSlotsRL func(http.Handler) http.Handler) {
 	r.Route("/checkpoints", func(r chi.Router) {
 		// Public (optional auth) — shared checkpoint pages.
 		r.With(optionalAuth).Get("/by-user", h.ListByUser) // ?user_id={id} — profile gallery
@@ -51,7 +51,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(auth).Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (map)
 		r.With(auth).Get("/nearby", h.ListNearby)
 		r.With(auth).Get("/me", h.ListMine)
-		r.With(auth).Post("/upload-slots", h.PrepareSlots)
+		r.With(auth, uploadSlotsRL).Post("/upload-slots", h.PrepareSlots)
 		r.With(auth).Post("/{id}/images", h.UploadImages)
 		r.With(auth).Post("/{id}/upload-urls", h.GetUploadURLs)
 		r.With(auth).Post("/{id}/images/link", h.LinkImages)

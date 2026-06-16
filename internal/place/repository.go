@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -208,33 +209,29 @@ const feedSelect = `c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat
 	u.username, u.display_name, u.avatar_key,
 	c.image_key, c.thumbnail_key`
 
-const feedFirstPageQuery = `SELECT ` + feedSelect + `,
-	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+const feedFirstPageQuery = `SELECT ` + feedSelect + `
 	FROM checkpoints c JOIN users u ON u.id = c.user_id
 	WHERE c.deleted_at IS NULL
+	ORDER BY c.created_at DESC, c.id DESC LIMIT $1`
+
+const feedCursorPageQuery = `SELECT ` + feedSelect + `
+	FROM checkpoints c JOIN users u ON u.id = c.user_id
+	WHERE c.deleted_at IS NULL
+	  AND (c.created_at, c.id) < ($1, $2)
 	ORDER BY c.created_at DESC, c.id DESC LIMIT $3`
 
-const feedCursorPageQuery = `SELECT ` + feedSelect + `,
-	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+const followingFeedFirstPageQuery = `SELECT ` + feedSelect + `
 	FROM checkpoints c JOIN users u ON u.id = c.user_id
 	WHERE c.deleted_at IS NULL
-	  AND (c.created_at, c.id) < ($3, $4)
-	ORDER BY c.created_at DESC, c.id DESC LIMIT $5`
+	  AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $1)
+	ORDER BY c.created_at DESC, c.id DESC LIMIT $2`
 
-const followingFeedFirstPageQuery = `SELECT ` + feedSelect + `,
-	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
+const followingFeedCursorPageQuery = `SELECT ` + feedSelect + `
 	FROM checkpoints c JOIN users u ON u.id = c.user_id
 	WHERE c.deleted_at IS NULL
 	  AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $3)
+	  AND (c.created_at, c.id) < ($1, $2)
 	ORDER BY c.created_at DESC, c.id DESC LIMIT $4`
-
-const followingFeedCursorPageQuery = `SELECT ` + feedSelect + `,
-	       ST_Distance(c.location, ST_MakePoint($1, $2)::geography) AS dist
-	FROM checkpoints c JOIN users u ON u.id = c.user_id
-	WHERE c.deleted_at IS NULL
-	  AND c.user_id IN (SELECT followee_id FROM follows WHERE follower_id = $6)
-	  AND (c.created_at, c.id) < ($3, $4)
-	ORDER BY c.created_at DESC, c.id DESC LIMIT $5`
 
 // parseFeedCursor decodes a "<unix_microseconds>:<id>" keyset cursor.
 func parseFeedCursor(cursor string) (*time.Time, *string) {
@@ -247,8 +244,8 @@ func parseFeedCursor(cursor string) (*time.Time, *string) {
 	return nil, nil
 }
 
-// scanFeedRows materializes feed rows (feedSelect + a trailing dist column).
-func (r *Repository) scanFeedRows(rows pgx.Rows, limit int) (*Feed, error) {
+// scanFeedRows materializes feed rows (feedSelect columns).
+func (r *Repository) scanFeedRows(rows pgx.Rows, limit int, userLng, userLat float64) (*Feed, error) {
 	defer rows.Close()
 	items := make([]FeedItem, 0, limit)
 	for rows.Next() {
@@ -257,7 +254,7 @@ func (r *Repository) scanFeedRows(rows pgx.Rows, limit int) (*Feed, error) {
 		if err := rows.Scan(
 			&it.ID, &it.UserID, &it.Name, &it.Category, &it.Note, &it.Rating, &it.Lat, &it.Lng, &it.Address,
 			&it.PlaceID, &it.XPAwarded, &it.CreatedAt,
-			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &thumbnailKey, &it.DistanceM,
+			&it.Author.Username, &it.Author.DisplayName, &avatarKey, &imageKey, &thumbnailKey,
 		); err != nil {
 			return nil, fmt.Errorf("scan feed item: %w", err)
 		}
@@ -273,6 +270,7 @@ func (r *Repository) scanFeedRows(rows pgx.Rows, limit int) (*Feed, error) {
 			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
 			it.ThumbnailURL = &u
 		}
+		it.DistanceM = haversine(userLat, userLng, it.Lat, it.Lng)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -296,14 +294,14 @@ func (r *Repository) Feed(ctx context.Context, lng, lat float64, cursor string, 
 	var rows pgx.Rows
 	var err error
 	if cursorTime == nil {
-		rows, err = r.db.Query(ctx, feedFirstPageQuery, lng, lat, limit)
+		rows, err = r.db.Query(ctx, feedFirstPageQuery, limit)
 	} else {
-		rows, err = r.db.Query(ctx, feedCursorPageQuery, lng, lat, cursorTime, cursorID, limit)
+		rows, err = r.db.Query(ctx, feedCursorPageQuery, cursorTime, cursorID, limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("feed: %w", err)
 	}
-	return r.scanFeedRows(rows, limit)
+	return r.scanFeedRows(rows, limit, lng, lat)
 }
 
 // FeedFollowing is Feed restricted to check-ins authored by users that
@@ -313,14 +311,30 @@ func (r *Repository) FeedFollowing(ctx context.Context, followerID string, lng, 
 	var rows pgx.Rows
 	var err error
 	if cursorTime == nil {
-		rows, err = r.db.Query(ctx, followingFeedFirstPageQuery, lng, lat, followerID, limit)
+		rows, err = r.db.Query(ctx, followingFeedFirstPageQuery, followerID, limit)
 	} else {
-		rows, err = r.db.Query(ctx, followingFeedCursorPageQuery, lng, lat, cursorTime, cursorID, limit, followerID)
+		rows, err = r.db.Query(ctx, followingFeedCursorPageQuery, cursorTime, cursorID, followerID, limit)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("feed following: %w", err)
 	}
-	return r.scanFeedRows(rows, limit)
+	return r.scanFeedRows(rows, limit, lng, lat)
+}
+
+// haversine calculates the distance between two coordinates in meters.
+func haversine(lat1, lon1, lat2, lon2 float64) float64 {
+	const r = 6371000.0 // Earth radius in meters
+	phi1 := lat1 * math.Pi / 180.0
+	phi2 := lat2 * math.Pi / 180.0
+	dphi := (lat2 - lat1) * math.Pi / 180.0
+	dlambda := (lon2 - lon1) * math.Pi / 180.0
+
+	a := math.Sin(dphi/2.0)*math.Sin(dphi/2.0) +
+		math.Cos(phi1)*math.Cos(phi2)*
+			math.Sin(dlambda/2.0)*math.Sin(dlambda/2.0)
+	c := 2.0 * math.Atan2(math.Sqrt(a), math.Sqrt(1.0-a))
+
+	return r * c
 }
 
 func (r *Repository) recentReviews(ctx context.Context, placeID string, limit int) ([]Review, error) {
