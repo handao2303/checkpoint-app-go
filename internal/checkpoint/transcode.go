@@ -88,3 +88,57 @@ func transcodeToMP4(ctx context.Context, input []byte) ([]byte, error) {
 	}
 	return result, nil
 }
+
+// extractThumbnailJPEG grabs a single frame near the start of an MP4 and returns
+// it as a JPEG (longest edge ≤640), for the video poster. Input should be a
+// valid MP4 (e.g. the output of transcodeToMP4).
+func extractThumbnailJPEG(ctx context.Context, mp4 []byte) ([]byte, error) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		return nil, ErrTranscodeUnavailable
+	}
+
+	in, err := os.CreateTemp("", "cp-thumb-in-*.mp4")
+	if err != nil {
+		return nil, fmt.Errorf("create temp input: %w", err)
+	}
+	defer func() { _ = os.Remove(in.Name()) }()
+	if _, err := in.Write(mp4); err != nil {
+		_ = in.Close()
+		return nil, fmt.Errorf("write temp input: %w", err)
+	}
+	if err := in.Close(); err != nil {
+		return nil, fmt.Errorf("close temp input: %w", err)
+	}
+
+	out, err := os.CreateTemp("", "cp-thumb-out-*.jpg")
+	if err != nil {
+		return nil, fmt.Errorf("create temp output: %w", err)
+	}
+	outName := out.Name()
+	_ = out.Close()
+	defer func() { _ = os.Remove(outName) }()
+
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-ss", "0.5", "-i", in.Name(), "-frames:v", "1",
+		"-vf", "scale='min(640,iw)':'min(640,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+		"-q:v", "3",
+		outName,
+	}
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("ffmpeg thumbnail: %w: %s", err, stderr.String())
+	}
+
+	jpg, err := os.ReadFile(outName)
+	if err != nil {
+		return nil, fmt.Errorf("read thumbnail output: %w", err)
+	}
+	if len(jpg) == 0 {
+		return nil, errors.New("thumbnail extraction produced empty output")
+	}
+	return jpg, nil
+}

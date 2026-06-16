@@ -64,6 +64,9 @@ type Image struct {
 	ThumbnailURL *string `json:"thumbnail_url,omitempty"`
 	Type         string  `json:"type"`
 	SortOrder    int     `json:"sort_order"`
+	// Pending is true while the media is still being processed by the worker
+	// (no thumbnail yet). Clients show a "đang xử lý" placeholder.
+	Pending bool `json:"pending,omitempty"`
 }
 
 // Author is the minimal public identity of a checkpoint's owner.

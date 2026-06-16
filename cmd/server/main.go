@@ -33,6 +33,7 @@ import (
 	"github.com/quanluon/checkpoint-app/internal/reaction"
 	"github.com/quanluon/checkpoint-app/internal/share"
 	appmw "github.com/quanluon/checkpoint-app/pkg/middleware"
+	"github.com/quanluon/checkpoint-app/pkg/pubsub"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
 	"github.com/quanluon/checkpoint-app/pkg/storage"
 	"github.com/quanluon/checkpoint-app/pkg/supabase"
@@ -129,8 +130,19 @@ func run() error {
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeySvc := journey.NewService(journeyRepo)
 	journeyHandler := journey.NewHandler(journeySvc)
-	cpSvc := checkpoint.NewService(checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient), r2, journeyRepo)
-	cpHandler := checkpoint.NewHandler(cpSvc)
+	cpRepo := checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient)
+	cpSvc := checkpoint.NewService(cpRepo, r2, journeyRepo)
+	// Async media pipeline: publish jobs to Pub/Sub (worker transcodes); when
+	// Pub/Sub is unset (local dev) the handler falls back to the inline processor.
+	mediaProcessor := checkpoint.NewProcessor(cpRepo, r2)
+	var mediaPublisher checkpoint.MediaPublisher
+	if pub := pubsub.New(cfg.gcpProject, cfg.pubsubTopic); pub.Enabled() {
+		mediaPublisher = pub
+		log.Printf("media pipeline: publishing to Pub/Sub topic %q", cfg.pubsubTopic)
+	} else {
+		log.Printf("media pipeline: Pub/Sub disabled — processing media inline")
+	}
+	cpHandler := checkpoint.NewHandler(cpSvc).WithMedia(mediaPublisher, mediaProcessor)
 
 	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc)
 	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL, redisClient)
@@ -299,6 +311,8 @@ type config struct {
 	frontendURL  string
 	drive        driveConfig
 	photos       photosConfig
+	gcpProject   string
+	pubsubTopic  string
 }
 
 func loadConfig() (config, error) {
@@ -322,6 +336,8 @@ func loadConfig() (config, error) {
 		},
 		placesAPIKey: os.Getenv("LOCATIONIQ_API_KEY"),
 		frontendURL:  getEnv("FRONTEND_URL", "http://localhost:5173"),
+		gcpProject:   os.Getenv("GCP_PROJECT_ID"),
+		pubsubTopic:  os.Getenv("PUBSUB_TOPIC"),
 		drive: driveConfig{
 			clientID:     os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
 			clientSecret: os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),

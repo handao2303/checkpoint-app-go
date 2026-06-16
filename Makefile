@@ -3,6 +3,7 @@
 
 # ---- Config (override on the CLI: `make deploy PROJECT_ID=my-proj`) ----
 SERVICE     ?= checkpoint-api
+WORKER_SERVICE ?= checkpoint-worker
 REGION      ?= us-central1
 PROJECT_ID  ?= $(shell gcloud config get-value project 2>/dev/null)
 BIN         ?= bin/server
@@ -19,6 +20,11 @@ DEPLOY_KEYS := DATABASE_URL JWT_SECRET JWT_ACCESS_TTL JWT_REFRESH_TTL SUPABASE_U
 	R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_ACCESS_KEY_SECRET R2_BUCKET_NAME R2_PUBLIC_URL
 DEPLOY_KEYS += RATE_LIMIT_ENABLED RATE_LIMIT_REQUESTS_PER_MINUTE RATE_LIMIT_BURST REDIS_URL
 
+# Keys the media worker needs (DB + R2; WORKER_PUSH_TOKEN optional). It does not
+# need JWT/Supabase/Redis/CORS — those are API-only.
+WORKER_KEYS := DATABASE_URL R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_ACCESS_KEY_SECRET \
+	R2_BUCKET_NAME R2_PUBLIC_URL WORKER_PUSH_TOKEN
+
 MIGRATE_VERSION ?= v4.18.1
 # Resolve the migrate binary: prefer PATH, fall back to $GOPATH/bin.
 MIGRATE := $(shell command -v migrate 2>/dev/null || echo "$(shell go env GOPATH)/bin/migrate")
@@ -26,7 +32,7 @@ MIGRATE := $(shell command -v migrate 2>/dev/null || echo "$(shell go env GOPATH
 .DEFAULT_GOAL := help
 .PHONY: help setup env tidy fmt vet lint test test-cover run dev build clean \
 	docker-build docker-run migrate-install migrate-up migrate-down migrate-create \
-	migrate-force gcp-enable deploy secrets-delete logs
+	migrate-force gcp-enable deploy deploy-worker secrets-delete logs
 
 ## ----------------------------------------------------------------------
 ## General
@@ -134,6 +140,24 @@ deploy: ## Build & deploy to Cloud Run (env vars from .env — no Secret Manager
 	gcloud run deploy $(SERVICE) \
 		--project $(PROJECT_ID) --region $(REGION) \
 		--source . --allow-unauthenticated --port 8080 \
+		--env-vars-file $$TMP; \
+	status=$$?; rm -f $$TMP; exit $$status
+
+deploy-worker: ## Build & deploy the media worker to Cloud Run (env vars from .env)
+	@TMP=$$(mktemp); \
+	{ \
+	  for key in $(WORKER_KEYS); do \
+	    val=$$(grep -E "^$$key=" .env | cut -d '=' -f2- | sed -E 's/[[:space:]]+#.*$$//; s/[[:space:]]+$$//'); \
+	    if [ -n "$$val" ]; then \
+	      esc=$$(printf '%s' "$$val" | sed -E 's/\\/\\\\/g; s/"/\\"/g'); \
+	      printf '%s: "%s"\n' "$$key" "$$esc"; \
+	    fi; \
+	  done; \
+	} > $$TMP; \
+	gcloud run deploy $(WORKER_SERVICE) \
+		--project $(PROJECT_ID) --region $(REGION) \
+		--source . --command /worker --no-allow-unauthenticated --port 8080 \
+		--cpu 2 --memory 1Gi --timeout 300 --concurrency 4 --min-instances 0 \
 		--env-vars-file $$TMP; \
 	status=$$?; rm -f $$TMP; exit $$status
 

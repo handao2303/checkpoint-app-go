@@ -136,6 +136,11 @@ jobs:
       GOOGLE_DRIVE_CLIENT_SECRET: ${{ secrets.GOOGLE_DRIVE_CLIENT_SECRET }}
       GOOGLE_PHOTOS_CLIENT_ID: ${{ secrets.GOOGLE_PHOTOS_CLIENT_ID }}
       GOOGLE_PHOTOS_CLIENT_SECRET: ${{ secrets.GOOGLE_PHOTOS_CLIENT_SECRET }}
+      # Async media pipeline. PUBSUB_TOPIC unset → API processes media inline and
+      # the worker deploy is skipped.
+      PUBSUB_TOPIC: ${{ vars.PUBSUB_TOPIC }}
+      CLOUD_RUN_WORKER_SERVICE: ${{ vars.CLOUD_RUN_WORKER_SERVICE }}
+      WORKER_PUSH_TOKEN: ${{ secrets.WORKER_PUSH_TOKEN }}
 
     outputs:
       service_url: ${{ steps.service.outputs.url }}
@@ -207,6 +212,8 @@ jobs:
             --arg GOOGLE_DRIVE_CLIENT_SECRET "$GOOGLE_DRIVE_CLIENT_SECRET" \
             --arg GOOGLE_PHOTOS_CLIENT_ID "$GOOGLE_PHOTOS_CLIENT_ID" \
             --arg GOOGLE_PHOTOS_CLIENT_SECRET "$GOOGLE_PHOTOS_CLIENT_SECRET" \
+            --arg GCP_PROJECT_ID "$GCP_PROJECT_ID" \
+            --arg PUBSUB_TOPIC "$PUBSUB_TOPIC" \
             '{
               ENV: $APP_ENV,
               CORS_ALLOWED_ORIGINS: $CORS_ALLOWED_ORIGINS,
@@ -230,7 +237,9 @@ jobs:
               GOOGLE_DRIVE_CLIENT_ID: $GOOGLE_DRIVE_CLIENT_ID,
               GOOGLE_DRIVE_CLIENT_SECRET: $GOOGLE_DRIVE_CLIENT_SECRET,
               GOOGLE_PHOTOS_CLIENT_ID: $GOOGLE_PHOTOS_CLIENT_ID,
-              GOOGLE_PHOTOS_CLIENT_SECRET: $GOOGLE_PHOTOS_CLIENT_SECRET
+              GOOGLE_PHOTOS_CLIENT_SECRET: $GOOGLE_PHOTOS_CLIENT_SECRET,
+              GCP_PROJECT_ID: $GCP_PROJECT_ID,
+              PUBSUB_TOPIC: $PUBSUB_TOPIC
             }' > "$runtime_env"
 
           if ! jq -e 'all(.[]; type == "string")' "$runtime_env" >/dev/null; then
@@ -264,6 +273,54 @@ jobs:
           fi
 
           echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy media worker to Cloud Run
+        if: ${{ env.PUBSUB_TOPIC != '' }}
+        run: |
+          worker_service="${CLOUD_RUN_WORKER_SERVICE:-checkpoint-worker}"
+          worker_env="$RUNNER_TEMP/worker-env.json"
+          trap 'rm -f "$worker_env"' EXIT
+
+          # Reuse the exact image just built for the API — same image ships both
+          # binaries; the worker only overrides the container command to /worker.
+          image="$(gcloud run services describe "$CLOUD_RUN_SERVICE" \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
+            --format='value(spec.template.spec.containers[0].image)')"
+          if [[ -z "$image" ]]; then
+            echo "::error::Could not resolve the API image for the worker"
+            exit 1
+          fi
+
+          jq -n \
+            --arg DATABASE_URL "$DATABASE_URL" \
+            --arg R2_ACCOUNT_ID "$R2_ACCOUNT_ID" \
+            --arg R2_ACCESS_KEY_ID "$R2_ACCESS_KEY_ID" \
+            --arg R2_ACCESS_KEY_SECRET "$R2_ACCESS_KEY_SECRET" \
+            --arg R2_BUCKET_NAME "$R2_BUCKET_NAME" \
+            --arg R2_PUBLIC_URL "$R2_PUBLIC_URL" \
+            --arg WORKER_PUSH_TOKEN "$WORKER_PUSH_TOKEN" \
+            '{
+              DATABASE_URL: $DATABASE_URL,
+              R2_ACCOUNT_ID: $R2_ACCOUNT_ID,
+              R2_ACCESS_KEY_ID: $R2_ACCESS_KEY_ID,
+              R2_ACCESS_KEY_SECRET: $R2_ACCESS_KEY_SECRET,
+              R2_BUCKET_NAME: $R2_BUCKET_NAME,
+              R2_PUBLIC_URL: $R2_PUBLIC_URL,
+              WORKER_PUSH_TOKEN: $WORKER_PUSH_TOKEN
+            }' > "$worker_env"
+          chmod 600 "$worker_env"
+
+          # Private service (Pub/Sub push SA invokes it via IAM — see DEPLOY.md §5.7).
+          gcloud run deploy "$worker_service" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --image "$image" \
+            --command /worker \
+            --port 8080 \
+            --no-allow-unauthenticated \
+            --concurrency 4 --cpu 2 --memory 1Gi --timeout 300 --min-instances 0 \
+            --env-vars-file "$worker_env" \
+            --quiet
 
       - name: Remove runtime environment file
         if: always()

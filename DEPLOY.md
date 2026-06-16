@@ -241,6 +241,8 @@ Add these repository variables:
 | `RATE_LIMIT_ENABLED` | `true` |
 | `RATE_LIMIT_REQUESTS_PER_MINUTE` | `120` |
 | `RATE_LIMIT_BURST` | `30` |
+| `PUBSUB_TOPIC` | `checkpoint-media` (empty → media processed inline, worker deploy skipped) |
+| `CLOUD_RUN_WORKER_SERVICE` | `checkpoint-worker` (optional; defaults to `checkpoint-worker`) |
 
 ### 5.5 Configure GitHub repository secrets
 
@@ -256,6 +258,8 @@ Add:
 - `R2_ACCESS_KEY_ID`
 - `R2_ACCESS_KEY_SECRET`
 - `REDIS_URL`
+- `WORKER_PUSH_TOKEN` (optional — extra shared-secret check on the worker's
+  Pub/Sub push endpoint, on top of Cloud Run IAM)
 
 Do not add `GCP_SA_KEY`; WIF replaces long-lived JSON service account keys.
 Use a `redis://` or TLS `rediss://` connection URL from the existing Redis
@@ -281,6 +285,69 @@ Automatic deployments caused by direct pushes or merged pull requests into
 
 The workflow intentionally does not pass `--allow-unauthenticated`, so it keeps
 the service's current public/private access policy unchanged.
+
+## 5.7 Media worker (Pub/Sub → Cloud Run)
+
+Video uploads are processed asynchronously: the API publishes a job to Pub/Sub
+after a check-in is created, and a separate Cloud Run service (`checkpoint-worker`)
+transcodes the raw video to MP4 + cuts a thumbnail. Both binaries ship in the same
+image — the worker service just overrides the container command to `/worker`.
+
+**The deploy workflow builds and deploys the worker automatically** (reusing the
+API's image, no second build) whenever the `PUBSUB_TOPIC` repository variable is
+set. When it's empty (e.g. local dev), the API processes media inline and the
+worker deploy step is skipped. No DB migration is required (`thumbnail_key IS NULL`
+is the pending marker).
+
+The Pub/Sub topic, push subscription, and IAM are a **one-time setup**. After the
+worker service exists (CI, or `make deploy-worker`), run the script — it does
+everything below idempotently:
+
+```bash
+PROJECT_ID=<your-project> ./scripts/setup-pubsub.sh
+# optional shared secret on the push endpoint:
+WORKER_PUSH_TOKEN=<secret> PROJECT_ID=<your-project> ./scripts/setup-pubsub.sh
+```
+
+The equivalent manual steps, for reference:
+
+```bash
+export PROJECT_ID="<your-project>"
+export REGION="us-central1"
+export TOPIC="checkpoint-media"
+
+# 1. Topic + dead-letter topic.
+gcloud pubsub topics create "$TOPIC" --project="$PROJECT_ID"
+gcloud pubsub topics create "$TOPIC-dlq" --project="$PROJECT_ID"
+
+# 2. The worker Cloud Run service is deployed by GitHub Actions (see §5), or
+#    locally with `make deploy-worker` (builds from source, env vars from .env,
+#    --command /worker, private). Grab its URL once it exists.
+WORKER_URL=$(gcloud run services describe checkpoint-worker --region="$REGION" --format='value(status.url)')
+
+# 3. Service account Pub/Sub uses to push (OIDC), allowed to invoke the worker.
+gcloud iam service-accounts create pubsub-pusher --project="$PROJECT_ID"
+PUSH_SA="pubsub-pusher@$PROJECT_ID.iam.gserviceaccount.com"
+gcloud run services add-iam-policy-binding checkpoint-worker --region="$REGION" \
+  --member="serviceAccount:$PUSH_SA" --role="roles/run.invoker"
+
+# 4. Push subscription → worker /internal/process, with dead-letter.
+gcloud pubsub subscriptions create "$TOPIC-push" \
+  --topic="$TOPIC" \
+  --push-endpoint="$WORKER_URL/internal/process" \
+  --push-auth-service-account="$PUSH_SA" \
+  --ack-deadline=120 \
+  --dead-letter-topic="$TOPIC-dlq" --max-delivery-attempts=5
+
+# 5. Let the API publish (grant the API's runtime SA pubsub.publisher).
+gcloud pubsub topics add-iam-policy-binding "$TOPIC" \
+  --member="serviceAccount:<checkpoint-api runtime SA>" --role="roles/pubsub.publisher"
+```
+
+The deploy SA needs `roles/run.sourceDeveloper`/`run.admin` for the worker service
+too (already covered if granted at project level in §5.2). The worker is private —
+only `pubsub-pusher` can invoke it (Cloud Run IAM). For defence-in-depth, set the
+`WORKER_PUSH_TOKEN` secret and append `?token=<value>` to the push endpoint URL.
 
 ## 6. Operations and cost
 

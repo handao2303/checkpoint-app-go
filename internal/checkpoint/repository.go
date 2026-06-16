@@ -189,6 +189,8 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		if key.ThumbnailKey != nil {
 			u := storage.PublicURL(r.mediaBase, *key.ThumbnailKey)
 			images[i].ThumbnailURL = &u
+		} else {
+			images[i].Pending = true // awaiting async processing (worker sets thumbnail)
 		}
 	}
 
@@ -224,16 +226,73 @@ func insertImagesTx(ctx context.Context, tx pgx.Tx, checkpointID string, keys []
 			return fmt.Errorf("insert image row: %w", err)
 		}
 	}
-	if len(keys) > 0 {
-		coverThumb := keys[0].ObjectKey
-		if keys[0].ThumbnailKey != nil {
-			coverThumb = *keys[0].ThumbnailKey
-		}
+	// Only set the cover from the first media if it already has a thumbnail (i.e.
+	// it's not awaiting async processing). For raw media that the worker will
+	// process (thumbnail_key NULL), the worker sets the cover via RefreshCover —
+	// otherwise the cover would point at an undisplayable raw key while pending.
+	if len(keys) > 0 && keys[0].ThumbnailKey != nil {
 		if _, err := tx.Exec(ctx,
 			`UPDATE checkpoints SET image_key = $2, thumbnail_key = $3 WHERE id = $1 AND image_key IS NULL`,
-			checkpointID, keys[0].ObjectKey, coverThumb); err != nil {
+			checkpointID, keys[0].ObjectKey, *keys[0].ThumbnailKey); err != nil {
 			return fmt.Errorf("set cover key: %w", err)
 		}
+	}
+	return nil
+}
+
+// pendingMedia is one checkpoint media item awaiting async processing
+// (thumbnail_key IS NULL).
+type pendingMedia struct {
+	ID        string
+	ObjectKey string
+	Type      string
+}
+
+// PendingMedia returns the checkpoint's media rows that still need processing
+// (thumbnail_key IS NULL), in display order.
+func (r *Repository) PendingMedia(ctx context.Context, checkpointID string) ([]pendingMedia, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id, object_key, media_type FROM checkpoint_images
+		 WHERE checkpoint_id = $1 AND thumbnail_key IS NULL
+		 ORDER BY sort_order, created_at`, checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("list pending media: %w", err)
+	}
+	defer rows.Close()
+	var out []pendingMedia
+	for rows.Next() {
+		var m pendingMedia
+		if err := rows.Scan(&m.ID, &m.ObjectKey, &m.Type); err != nil {
+			return nil, fmt.Errorf("scan pending media: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// SetMediaThumbnail records the processed thumbnail key for a media row. Setting
+// thumbnail_key is the "done" marker — the row is no longer considered pending.
+func (r *Repository) SetMediaThumbnail(ctx context.Context, imageID, thumbnailKey string) error {
+	if _, err := r.db.Exec(ctx,
+		`UPDATE checkpoint_images SET thumbnail_key = $2 WHERE id = $1`, imageID, thumbnailKey); err != nil {
+		return fmt.Errorf("set media thumbnail: %w", err)
+	}
+	return nil
+}
+
+// RefreshCover sets the checkpoint's denormalized cover from its first media row,
+// once that row has been processed (thumbnail_key set). No-op while the first row
+// is still pending.
+func (r *Repository) RefreshCover(ctx context.Context, checkpointID string) error {
+	if _, err := r.db.Exec(ctx, `
+		UPDATE checkpoints c
+		SET image_key = ci.object_key, thumbnail_key = ci.thumbnail_key
+		FROM (
+			SELECT object_key, thumbnail_key FROM checkpoint_images
+			WHERE checkpoint_id = $1 ORDER BY sort_order, created_at LIMIT 1
+		) ci
+		WHERE c.id = $1 AND ci.thumbnail_key IS NOT NULL`, checkpointID); err != nil {
+		return fmt.Errorf("refresh cover: %w", err)
 	}
 	return nil
 }
@@ -332,7 +391,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.created_at, c.updated_at,
 		        c.image_key, c.thumbnail_key,
 		        u.username, u.display_name, u.avatar_key,
-		        ci.id, ci.object_key, COALESCE(ci.thumbnail_key, ci.object_key), ci.media_type, ci.sort_order
+		        ci.id, ci.object_key, ci.thumbnail_key, ci.media_type, ci.sort_order
 		 FROM checkpoints c
 		 JOIN users u ON u.id = c.user_id
 		 LEFT JOIN checkpoint_images ci ON ci.checkpoint_id = c.id
@@ -381,8 +440,13 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		if imageID != nil {
 			img := Image{ID: *imageID, URL: *objectKey, Type: mediaTypeOrDefaultPtr(mediaType), SortOrder: *sortOrder}
 			img.URL = storage.PublicURL(r.mediaBase, img.URL)
-			thumbnailURL := storage.PublicURL(r.mediaBase, *thumbnailKey)
-			img.ThumbnailURL = &thumbnailURL
+			if thumbnailKey != nil {
+				thumbnailURL := storage.PublicURL(r.mediaBase, *thumbnailKey)
+				img.ThumbnailURL = &thumbnailURL
+			} else {
+				// No thumbnail yet → still being processed by the media worker.
+				img.Pending = true
+			}
 			detail.Images = append(detail.Images, img)
 		}
 	}

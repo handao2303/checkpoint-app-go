@@ -1,7 +1,6 @@
 package checkpoint
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -380,67 +379,6 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 		return nil, err
 	}
 	return s.repo.AddImages(ctx, checkpointID, keys, existing)
-}
-
-// VideoUpload is a raw (any-format) video plus its client-generated thumbnail.
-// The video is transcoded to MP4 server-side because many browsers cannot
-// produce MP4 themselves.
-type VideoUpload struct {
-	Body                 io.Reader
-	ThumbnailContentType string
-	ThumbnailBody        io.Reader
-}
-
-// PrepareVideo transcodes a raw video to MP4 (server-side, via ffmpeg), uploads
-// it and its thumbnail to R2, and returns the stored keys for the client to
-// include in POST /checkpoints. The input and output sizes are enforced here —
-// the browser's size check is advisory only.
-func (s *Service) PrepareVideo(ctx context.Context, in VideoUpload) (ImageKeys, error) {
-	raw, err := io.ReadAll(io.LimitReader(in.Body, maxVideoInputBytes+1))
-	if err != nil {
-		return ImageKeys{}, fmt.Errorf("read video: %w", err)
-	}
-	if len(raw) == 0 {
-		return ImageKeys{}, fmt.Errorf("%w: video rỗng", ErrInvalidInput)
-	}
-	if len(raw) > maxVideoInputBytes {
-		return ImageKeys{}, fmt.Errorf("%w: video quá lớn (tối đa %d MB)", ErrInvalidInput, maxVideoInputBytes>>20)
-	}
-
-	mp4, err := transcodeToMP4(ctx, raw)
-	if err != nil {
-		if errors.Is(err, ErrTranscodeUnavailable) {
-			return ImageKeys{}, err
-		}
-		return ImageKeys{}, fmt.Errorf("transcode video: %w", err)
-	}
-	if len(mp4) > maxVideoOutputBytes {
-		return ImageKeys{}, fmt.Errorf("%w: video sau khi nén vẫn quá lớn (tối đa %d MB)", ErrInvalidInput, maxVideoOutputBytes>>20)
-	}
-
-	// Use a random 16-byte prefix (unguessable). The checkpoint ID assigned by
-	// the DB differs — validateMediaKeys only requires the "checkpoints/" prefix.
-	prefix := randHex(16)
-	objKey := fmt.Sprintf("checkpoints/%s/%s.mp4", prefix, randHex(8))
-	storedKey, err := s.storage.Upload(ctx, objKey, "video/mp4", bytes.NewReader(mp4))
-	if err != nil {
-		return ImageKeys{}, fmt.Errorf("upload video: %w", err)
-	}
-	keys := ImageKeys{ObjectKey: storedKey, Type: MediaTypeVideo}
-
-	// The client-generated JPEG thumbnail works in every browser, so it's kept.
-	if in.ThumbnailBody != nil {
-		if ext := imageExt(in.ThumbnailContentType); ext == ".jpg" {
-			thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s.jpg", prefix, randHex(8))
-			storedThumb, terr := s.storage.Upload(ctx, thumbKey, in.ThumbnailContentType, in.ThumbnailBody)
-			if terr != nil {
-				log.Printf("upload video thumbnail: %v", terr)
-			} else {
-				keys.ThumbnailKey = &storedThumb
-			}
-		}
-	}
-	return keys, nil
 }
 
 // UploadSlot holds a presigned PUT URL and the key that will be stored once the

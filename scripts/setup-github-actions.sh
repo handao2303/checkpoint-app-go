@@ -125,12 +125,15 @@ NOMINATIM_USER_AGENT="$(value_or_default NOMINATIM_USER_AGENT "checkpoint-app/0.
 RATE_LIMIT_ENABLED="$(value_or_default RATE_LIMIT_ENABLED "true")"
 RATE_LIMIT_REQUESTS_PER_MINUTE="$(value_or_default RATE_LIMIT_REQUESTS_PER_MINUTE "120")"
 RATE_LIMIT_BURST="$(value_or_default RATE_LIMIT_BURST "30")"
+PUBSUB_TOPIC="$(dotenv_value PUBSUB_TOPIC)"
+CLOUD_RUN_WORKER_SERVICE="$(value_or_default CLOUD_RUN_WORKER_SERVICE "checkpoint-worker")"
 
 DATABASE_URL="$(dotenv_value DATABASE_URL)"
 JWT_SECRET="$(dotenv_value JWT_SECRET)"
 R2_ACCESS_KEY_ID="$(dotenv_value R2_ACCESS_KEY_ID)"
 R2_ACCESS_KEY_SECRET="$(dotenv_value R2_ACCESS_KEY_SECRET)"
 REDIS_URL="$(dotenv_value REDIS_URL)"
+WORKER_PUSH_TOKEN="$(dotenv_value WORKER_PUSH_TOKEN)"
 
 require_value CORS_ALLOWED_ORIGINS "$CORS_ALLOWED_ORIGINS"
 require_value SUPABASE_URL "$SUPABASE_URL"
@@ -158,11 +161,15 @@ set_variable NOMINATIM_USER_AGENT "$NOMINATIM_USER_AGENT"
 set_variable RATE_LIMIT_ENABLED "$RATE_LIMIT_ENABLED"
 set_variable RATE_LIMIT_REQUESTS_PER_MINUTE "$RATE_LIMIT_REQUESTS_PER_MINUTE"
 set_variable RATE_LIMIT_BURST "$RATE_LIMIT_BURST"
+# Async media worker. PUBSUB_TOPIC empty → media processed inline, worker deploy skipped.
+set_variable PUBSUB_TOPIC "$PUBSUB_TOPIC"
+set_variable CLOUD_RUN_WORKER_SERVICE "$CLOUD_RUN_WORKER_SERVICE"
 
 set_secret DATABASE_URL "$DATABASE_URL"
 set_secret JWT_SECRET "$JWT_SECRET"
 set_secret R2_ACCESS_KEY_ID "$R2_ACCESS_KEY_ID"
 set_secret R2_ACCESS_KEY_SECRET "$R2_ACCESS_KEY_SECRET"
 set_secret REDIS_URL "$REDIS_URL"
+set_secret WORKER_PUSH_TOKEN "$WORKER_PUSH_TOKEN"
 
 echo "GitHub Actions variables and secrets are configured."

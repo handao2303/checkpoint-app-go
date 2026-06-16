@@ -99,6 +99,39 @@ func (c *R2) Upload(ctx context.Context, key, contentType string, body io.Reader
 	return key, nil
 }
 
+// GetObject fetches the object stored under key. The caller must close the
+// returned reader. Used by the media worker to download raw uploads for
+// processing.
+func (c *R2) GetObject(ctx context.Context, key string) (io.ReadCloser, string, error) {
+	canonicalURI := "/" + c.cfg.Bucket + "/" + uriEncodePath(key)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://"+c.host+canonicalURI, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build get request: %w", err)
+	}
+
+	now := time.Now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	dateStamp := now.Format("20060102")
+	payloadHash := hexSHA256(nil) // empty body
+
+	req.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	req.Header.Set("X-Amz-Date", amzDate)
+	req.Header.Set("Authorization",
+		c.authorization(http.MethodGet, canonicalURI, "", payloadHash, amzDate, dateStamp))
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("get from r2: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		_ = resp.Body.Close()
+		return nil, "", fmt.Errorf("r2 get failed: status %d: %s", resp.StatusCode, msg)
+	}
+	return resp.Body, resp.Header.Get("Content-Type"), nil
+}
+
 // Delete removes the object stored under key. Deleting a missing object is not
 // an error (S3 DELETE is idempotent and returns 204 either way).
 func (c *R2) Delete(ctx context.Context, key string) error {
