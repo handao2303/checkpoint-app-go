@@ -21,7 +21,7 @@ var ErrNotFound = errors.New("place not found")
 // matchRadiusM and nameSimilarity tune place resolution: a check-in matches an
 // existing place within this many metres whose name is at least this similar.
 const (
-	matchRadiusM   = 75.0
+	matchRadiusM   = 10.0
 	nameSimilarity = 0.3
 	searchMinSim   = 0.2 // looser threshold for explicit name search
 )
@@ -113,14 +113,13 @@ func (r *Repository) Search(ctx context.Context, q string, near *Point, limit in
 	return collectPlaces(rows)
 }
 
-// ListNearby returns places within radiusM metres of (lng, lat), nearest first.
-func (r *Repository) ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Place, error) {
+// ListNearby returns places near a point (lng, lat) ordered from nearest to farthest with offset pagination.
+func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int, offset int) ([]*Place, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT `+placeColumns+` FROM places
-		 WHERE ST_DWithin(location, ST_MakePoint($1, $2)::geography, $3)
 		 ORDER BY location <-> ST_MakePoint($1, $2)::geography
-		 LIMIT $4`,
-		lng, lat, radiusM, limit)
+		 LIMIT $3 OFFSET $4`,
+		lng, lat, limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("list nearby places: %w", err)
 	}
@@ -129,7 +128,7 @@ func (r *Repository) ListNearby(ctx context.Context, lng, lat, radiusM float64, 
 
 // GetDetail returns a place plus aggregated community data (avg rating, recent
 // photos, recent reviews) from its check-ins.
-func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) {
+func (r *Repository) GetDetail(ctx context.Context, id string, limit, offset int) (*Detail, error) {
 	p, err := scanPlace(r.db.QueryRow(ctx, `SELECT `+placeColumns+` FROM places WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -145,15 +144,60 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		return nil, fmt.Errorf("place avg rating: %w", err)
 	}
 
-	images, err := r.recentImages(ctx, id, 6)
+	// Recent check‑ins – same shape as FeedItem but without distance.
+	checkins, err := r.recentCheckins(ctx, id, limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	reviews, err := r.recentReviews(ctx, id, 5)
+
+	return &Detail{Place: p, AvgRating: avg, Checkins: checkins}, nil
+}
+
+// recentCheckins returns the most recent checkpoints for a place.
+func (r *Repository) recentCheckins(ctx context.Context, placeID string, limit, offset int) ([]FeedItem, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
+			c.place_id, c.xp_awarded, c.created_at,
+			u.username, u.display_name, u.avatar_key,
+			c.image_key, c.thumbnail_key,
+			CASE WHEN c.image_key ILIKE '%.mp4' THEN 'video' WHEN c.image_key IS NOT NULL THEN 'image' ELSE NULL END
+		 FROM checkpoints c JOIN users u ON u.id = c.user_id
+		 WHERE c.place_id = $1 AND c.deleted_at IS NULL
+		 ORDER BY c.created_at DESC
+		 LIMIT $2 OFFSET $3`, placeID, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("place recent checkins: %w", err)
 	}
-	return &Detail{Place: p, AvgRating: avg, Images: images, Reviews: reviews}, nil
+	defer rows.Close()
+
+	var out []FeedItem
+	for rows.Next() {
+		var it FeedItem
+		var avatarKey, imageKey, thumbnailKey *string
+		if err := rows.Scan(
+			&it.ID, &it.UserID, &it.Name, &it.Category, &it.Note, &it.Rating,
+			&it.Lat, &it.Lng, &it.Address, &it.PlaceID, &it.XPAwarded, &it.CreatedAt,
+			&it.Author.Username, &it.Author.DisplayName, &avatarKey,
+			&imageKey, &thumbnailKey, &it.MediaType,
+		); err != nil {
+			return nil, fmt.Errorf("scan recent checkin: %w", err)
+		}
+		if avatarKey != nil {
+			u := storage.PublicURL(r.mediaBase, *avatarKey)
+			it.Author.AvatarURL = &u
+		}
+		if imageKey != nil {
+			u := storage.PublicURL(r.mediaBase, *imageKey)
+			it.ImageURL = &u
+		}
+		if thumbnailKey != nil {
+			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
+			it.ThumbnailURL = &u
+		}
+		// Distance will be computed client‑side; keep zero.
+		out = append(out, it)
+	}
+	return out, rows.Err()
 }
 
 func (r *Repository) recentImages(ctx context.Context, placeID string, limit int) ([]DetailImage, error) {

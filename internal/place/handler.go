@@ -108,7 +108,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"places": places})
 }
 
-// Nearby returns places near a point (?lat&lng&radius&limit).
+// Nearby returns places near a point (?lat&lng&limit&offset).
 func (h *Handler) Nearby(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
@@ -117,9 +117,9 @@ func (h *Handler) Nearby(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusBadRequest, "lat and lng are required numbers")
 		return
 	}
-	radius, _ := strconv.ParseFloat(q.Get("radius"), 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
-	places, err := h.svc.ListNearby(r.Context(), lng, lat, radius, limit)
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	places, err := h.svc.ListNearby(r.Context(), lng, lat, limit, offset)
 	if err != nil {
 		h.listError(w, err)
 		return
@@ -129,7 +129,11 @@ func (h *Handler) Nearby(w http.ResponseWriter, r *http.Request) {
 
 // Get returns a place detail (aggregate) by id.
 func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
-	detail, err := h.svc.GetDetail(r.Context(), chi.URLParam(r, "id"))
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+
+	detail, err := h.svc.GetDetail(r.Context(), chi.URLParam(r, "id"), limit, offset)
 	if errors.Is(err, ErrNotFound) {
 		respond.Error(w, http.StatusNotFound, "place not found")
 		return

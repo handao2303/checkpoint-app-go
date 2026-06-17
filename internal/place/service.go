@@ -29,8 +29,8 @@ const (
 // interface for easy mocking).
 type readRepository interface {
 	Search(ctx context.Context, q string, near *Point, limit int) ([]*Place, error)
-	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Place, error)
-	GetDetail(ctx context.Context, id string) (*Detail, error)
+	ListNearby(ctx context.Context, lng, lat float64, limit int, offset int) ([]*Place, error)
+	GetDetail(ctx context.Context, id string, limit int, offset int) (*Detail, error)
 	Popular(ctx context.Context, near *Point, radiusM float64, limit int) ([]*Place, error)
 	Feed(ctx context.Context, lng, lat float64, cursor string, limit int) (*Feed, error)
 	FeedFollowing(ctx context.Context, followerID string, lng, lat float64, cursor string, limit int) (*Feed, error)
@@ -67,23 +67,29 @@ func (s *Service) Search(ctx context.Context, q string, near *Point, limit int) 
 	return s.repo.Search(ctx, q, near, clampLimit(limit))
 }
 
-// ListNearby returns places near a point (radius clamped).
-func (s *Service) ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Place, error) {
+// ListNearby returns places near a point ordered from nearest to farthest with offset pagination.
+func (s *Service) ListNearby(ctx context.Context, lng, lat float64, limit, offset int) ([]*Place, error) {
 	if lat < -90 || lat > 90 || lng < -180 || lng > 180 {
 		return nil, fmt.Errorf("%w: lat/lng out of range", ErrInvalidInput)
 	}
-	if radiusM <= 0 {
-		radiusM = defaultRadiusM
+	if offset < 0 {
+		offset = 0
 	}
-	if radiusM > maxRadiusM {
-		radiusM = maxRadiusM
-	}
-	return s.repo.ListNearby(ctx, lng, lat, radiusM, clampLimit(limit))
+	return s.repo.ListNearby(ctx, lng, lat, clampLimit(limit), offset)
 }
 
 // GetDetail returns a place with aggregated community data.
-func (s *Service) GetDetail(ctx context.Context, id string) (*Detail, error) {
-	return s.repo.GetDetail(ctx, id)
+func (s *Service) GetDetail(ctx context.Context, id string, limit int, offset int) (*Detail, error) {
+	if limit <= 0 {
+		limit = defaultLimit
+	}
+	if limit > maxLimit {
+		limit = maxLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return s.repo.GetDetail(ctx, id, limit, offset)
 }
 
 // Feed returns community check-ins ordered newest → oldest (keyset cursor).

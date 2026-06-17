@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -46,12 +47,28 @@ type Handler struct {
 	redis       redis.Cmdable
 }
 
+func isNilCmdable(c redis.Cmdable) bool {
+	if c == nil {
+		return true
+	}
+	val := reflect.ValueOf(c)
+	switch val.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+		return val.IsNil()
+	}
+	return false
+}
+
 // NewHandler constructs a new Share Handler.
 func NewHandler(svc *Service, frontendURL string, rClient redis.Cmdable) *Handler {
+	var cmdable redis.Cmdable
+	if !isNilCmdable(rClient) {
+		cmdable = rClient
+	}
 	return &Handler{
 		svc:         svc,
 		frontendURL: frontendURL,
-		redis:       rClient,
+		redis:       cmdable,
 	}
 }
 

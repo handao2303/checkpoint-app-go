@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"sync"
 	"time"
 
@@ -44,11 +45,27 @@ const (
 	apiBase    = "https://us1.locationiq.com/v1/nearby"
 )
 
+func isNilCmdable(c redis.Cmdable) bool {
+	if c == nil {
+		return true
+	}
+	val := reflect.ValueOf(c)
+	switch val.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map, reflect.Pointer, reflect.UnsafePointer, reflect.Interface, reflect.Slice:
+		return val.IsNil()
+	}
+	return false
+}
+
 // NewClient creates a Client. When apiKey is empty, Search always returns [].
 func NewClient(apiKey string, rClient redis.Cmdable) *Client {
+	var cmdable redis.Cmdable
+	if !isNilCmdable(rClient) {
+		cmdable = rClient
+	}
 	return &Client{
 		apiKey: apiKey,
-		redis:  rClient,
+		redis:  cmdable,
 		cache:  make(map[string]cacheEntry),
 		http:   &http.Client{Timeout: 5 * time.Second},
 	}

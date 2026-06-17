@@ -37,6 +37,7 @@ type Detail struct {
 	AvgRating *float64      `json:"avg_rating,omitempty"`
 	Images    []DetailImage `json:"images"`
 	Reviews   []Review      `json:"reviews"`
+	Checkins  []FeedItem    `json:"checkins"`
 }
 
 // DetailImage is a recent photo across the place's check-ins.
