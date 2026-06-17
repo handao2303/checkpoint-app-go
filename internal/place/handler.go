@@ -26,9 +26,9 @@ func NewHandler(svc *Service) *Handler {
 // + shared pages); the following feed and search/popular/nearby require auth.
 func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
 	r.Route("/places", func(r chi.Router) {
-		r.With(auth).Get("/search", h.Search)
-		r.With(auth).Get("/nearby", h.Nearby)
-		r.With(auth).Get("/popular", h.Popular)
+		r.With(optionalAuth).Get("/search", h.Search)
+		r.With(optionalAuth).Get("/nearby", h.Nearby)
+		r.With(optionalAuth).Get("/popular", h.Popular)
 		r.With(optionalAuth).Get("/{id}", h.Get)
 	})
 	r.With(optionalAuth).Get("/discover/feed", h.Feed)
