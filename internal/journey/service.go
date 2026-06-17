@@ -20,6 +20,7 @@ type repository interface {
 	SetActive(ctx context.Context, id, userID string, active bool) (*Journey, error)
 	Delete(ctx context.Context, id, userID string) error
 	AssignCheckpoint(ctx context.Context, journeyID, checkpointID, userID string) error
+	AssignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error
 }
 
 // Service holds the journey business logic.
@@ -88,6 +89,28 @@ func (s *Service) Delete(ctx context.Context, id, userID string) error {
 // AssignCheckpoint attaches a checkpoint to a journey (both owned by the caller).
 func (s *Service) AssignCheckpoint(ctx context.Context, journeyID, checkpointID, userID string) error {
 	return s.repo.AssignCheckpoint(ctx, journeyID, checkpointID, userID)
+}
+
+// AssignCheckpoints attaches caller-owned checkpoints to a journey in the
+// submitted order.
+func (s *Service) AssignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error {
+	if len(checkpointIDs) == 0 {
+		return fmt.Errorf("%w: checkpoint_ids is required", ErrInvalidInput)
+	}
+	seen := make(map[string]struct{}, len(checkpointIDs))
+	normalized := make([]string, 0, len(checkpointIDs))
+	for _, id := range checkpointIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return fmt.Errorf("%w: checkpoint id is required", ErrInvalidInput)
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("%w: duplicate checkpoint id", ErrInvalidInput)
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	return s.repo.AssignCheckpoints(ctx, journeyID, normalized, userID)
 }
 
 func trimPtr(s *string) *string {

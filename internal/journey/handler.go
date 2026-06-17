@@ -30,6 +30,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(auth).Get("/me", h.ListMine)
 		r.With(auth).Patch("/{id}", h.Update)
 		r.With(auth).Delete("/{id}", h.Delete)
+		r.With(auth).Post("/{id}/checkpoints", h.AssignCheckpoints)
 		r.With(auth).Post("/{id}/checkpoints/{cpId}", h.AssignCheckpoint)
 	})
 }
@@ -110,6 +111,24 @@ func (h *Handler) AssignCheckpoint(w http.ResponseWriter, r *http.Request) {
 	err := h.svc.AssignCheckpoint(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "cpId"), p.UserID)
 	if err != nil {
 		h.writeError(w, err, "could not assign checkpoint")
+		return
+	}
+	respond.JSON(w, http.StatusNoContent, nil)
+}
+
+// AssignCheckpoints attaches checkpoints to the journey in the request order.
+func (h *Handler) AssignCheckpoints(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	var req struct {
+		CheckpointIDs []string `json:"checkpoint_ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	err := h.svc.AssignCheckpoints(r.Context(), chi.URLParam(r, "id"), req.CheckpointIDs, p.UserID)
+	if err != nil {
+		h.writeError(w, err, "could not assign checkpoints")
 		return
 	}
 	respond.JSON(w, http.StatusNoContent, nil)

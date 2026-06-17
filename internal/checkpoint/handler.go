@@ -2,6 +2,7 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
@@ -233,6 +234,33 @@ func (h *Handler) PrepareSlots(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if r.URL.Query().Get("journey") == "none" {
+		var cursor *CheckpointCursor
+		if raw := r.URL.Query().Get("cursor"); raw != "" {
+			decoded, err := base64.RawURLEncoding.DecodeString(raw)
+			if err != nil {
+				respond.Error(w, http.StatusBadRequest, "invalid cursor")
+				return
+			}
+			parts := strings.SplitN(string(decoded), "|", 2)
+			if len(parts) != 2 {
+				respond.Error(w, http.StatusBadRequest, "invalid cursor")
+				return
+			}
+			cursor = &CheckpointCursor{CreatedAt: parts[0], ID: parts[1]}
+		}
+		page, err := h.svc.ListMineUnassigned(r.Context(), p.UserID, limit, cursor)
+		if err != nil {
+			respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
+			return
+		}
+		if page.NextCursor != nil {
+			encoded := base64.RawURLEncoding.EncodeToString([]byte(*page.NextCursor))
+			page.NextCursor = &encoded
+		}
+		respond.JSON(w, http.StatusOK, page)
+		return
+	}
 	list, err := h.svc.ListMine(r.Context(), p.UserID, limit)
 	if err != nil {
 		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")

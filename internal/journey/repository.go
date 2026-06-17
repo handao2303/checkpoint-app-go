@@ -142,7 +142,7 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (err error) 
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, `UPDATE checkpoints SET journey_id = NULL WHERE journey_id = $1`, id); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE checkpoints SET journey_id = NULL, journey_order = NULL WHERE journey_id = $1`, id); err != nil {
 		return fmt.Errorf("detach checkpoints: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
@@ -174,8 +174,23 @@ func (r *Repository) BelongsToUser(ctx context.Context, userID, journeyID string
 
 // AssignCheckpoint attaches a checkpoint to a journey, both owned by userID.
 func (r *Repository) AssignCheckpoint(ctx context.Context, journeyID, checkpointID, userID string) error {
+	return r.assignCheckpoints(ctx, journeyID, []string{checkpointID}, userID, true)
+}
+
+// AssignCheckpoints attaches checkpoints to a journey in the submitted order.
+func (r *Repository) AssignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error {
+	return r.assignCheckpoints(ctx, journeyID, checkpointIDs, userID, false)
+}
+
+func (r *Repository) assignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string, appendOrder bool) (err error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin assign checkpoints: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	var ok bool
-	err := r.db.QueryRow(ctx,
+	err = tx.QueryRow(ctx,
 		`SELECT true FROM journeys WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
 		journeyID, userID).Scan(&ok)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -184,14 +199,66 @@ func (r *Repository) AssignCheckpoint(ctx context.Context, journeyID, checkpoint
 	if err != nil {
 		return fmt.Errorf("check journey owner: %w", err)
 	}
-	tag, err := r.db.Exec(ctx,
-		`UPDATE checkpoints SET journey_id = $1, updated_at = NOW()
-		 WHERE id = $2 AND user_id = $3 AND deleted_at IS NULL`, journeyID, checkpointID, userID)
-	if err != nil {
-		return fmt.Errorf("assign checkpoint: %w", err)
+
+	baseOrder := 0
+	if appendOrder {
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(MAX(journey_order) + 1, 0)
+			 FROM checkpoints WHERE journey_id = $1 AND deleted_at IS NULL`,
+			journeyID).Scan(&baseOrder); err != nil {
+			return fmt.Errorf("next journey order: %w", err)
+		}
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+
+	for i, checkpointID := range checkpointIDs {
+		tag, err := tx.Exec(ctx,
+			`UPDATE checkpoints SET journey_id = $1, journey_order = $2, updated_at = NOW()
+			 WHERE id = $3 AND user_id = $4 AND deleted_at IS NULL
+			   AND (journey_id IS NULL OR journey_id = $1)`,
+			journeyID, baseOrder+i, checkpointID, userID)
+		if err != nil {
+			return fmt.Errorf("assign checkpoint: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrNotFound
+		}
+	}
+
+	if err := r.recalculateStatsTx(ctx, tx, journeyID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit assign checkpoints: %w", err)
+	}
+	return nil
+}
+
+func (r *Repository) recalculateStatsTx(ctx context.Context, tx pgx.Tx, journeyID string) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE journeys
+		    SET checkpoint_count = stats.checkpoint_count,
+		        total_xp = stats.total_xp,
+		        started_at = CASE
+		          WHEN journeys.is_active THEN journeys.started_at
+		          ELSE stats.started_at
+		        END,
+		        ended_at = CASE
+		          WHEN journeys.is_active THEN NULL
+		          ELSE stats.ended_at
+		        END,
+		        updated_at = NOW()
+		   FROM (
+		     SELECT COUNT(*)::int AS checkpoint_count,
+		            COALESCE(SUM(xp_awarded), 0)::int AS total_xp,
+		            MIN(created_at) AS started_at,
+		            MAX(created_at) AS ended_at
+		       FROM checkpoints
+		      WHERE journey_id = $1 AND deleted_at IS NULL
+		   ) stats
+		  WHERE journeys.id = $1`,
+		journeyID)
+	if err != nil {
+		return fmt.Errorf("recalculate journey stats: %w", err)
 	}
 	return nil
 }
@@ -216,7 +283,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 
 	// Distance still requires a spatial aggregate.
 	if err := r.db.QueryRow(ctx,
-		`SELECT COALESCE(ST_Length(ST_MakeLine(location::geometry ORDER BY created_at)::geography) / 1000, 0)
+		`SELECT COALESCE(ST_Length(ST_MakeLine(location::geometry ORDER BY journey_order ASC NULLS LAST, created_at)::geography) / 1000, 0)
 		 FROM checkpoints WHERE journey_id = $1 AND deleted_at IS NULL`, id).
 		Scan(&stats.DistanceKm); err != nil {
 		return nil, fmt.Errorf("journey distance: %w", err)
@@ -227,7 +294,8 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		        c.place_id, c.created_at, c.image_key, c.thumbnail_key,
 		        CASE WHEN c.image_key ILIKE '%.mp4' THEN 'video' WHEN c.image_key IS NOT NULL THEN 'image' ELSE NULL END
 		 FROM checkpoints c
-		 WHERE c.journey_id = $1 AND c.deleted_at IS NULL ORDER BY c.created_at`, id)
+		 WHERE c.journey_id = $1 AND c.deleted_at IS NULL
+		 ORDER BY c.journey_order ASC NULLS LAST, c.created_at`, id)
 	if err != nil {
 		return nil, fmt.Errorf("journey stops: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -40,6 +41,7 @@ type repository interface {
 	GetByID(ctx context.Context, id string) (*Checkpoint, error)
 	GetDetail(ctx context.Context, id string) (*Detail, error)
 	ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error)
+	ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error)
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
 	AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error)
@@ -90,6 +92,19 @@ type Input struct {
 	JourneyID    *string
 	// Images are media keys already uploaded directly to R2. Required (≥1).
 	Images []ImageKeys
+}
+
+// CheckpointCursor is a keyset cursor for checkpoint lists ordered by newest
+// first: created_at DESC, id DESC.
+type CheckpointCursor struct {
+	CreatedAt string
+	ID        string
+}
+
+// CheckpointPage is a paginated checkpoint response.
+type CheckpointPage struct {
+	Checkpoints []*Checkpoint `json:"checkpoints"`
+	NextCursor  *string       `json:"next_cursor,omitempty"`
 }
 
 // Create validates input and creates a checkpoint, awarding XP.
@@ -507,6 +522,29 @@ func (s *Service) ListByUser(ctx context.Context, userID string, limit int) ([]*
 // ListMine returns the caller's checkpoints.
 func (s *Service) ListMine(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
 	return s.ListByUser(ctx, userID, limit)
+}
+
+// ListMineUnassigned returns caller-owned checkpoints that are not attached to a
+// journey yet, newest first.
+func (s *Service) ListMineUnassigned(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) (*CheckpointPage, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	list, err := s.repo.ListUnassignedByUser(ctx, userID, limit+1, cursor)
+	if err != nil {
+		return nil, err
+	}
+	page := &CheckpointPage{Checkpoints: list}
+	if len(list) > limit {
+		page.Checkpoints = list[:limit]
+		last := page.Checkpoints[len(page.Checkpoints)-1]
+		next := last.CreatedAt.Format(time.RFC3339Nano) + "|" + last.ID
+		page.NextCursor = &next
+	}
+	return page, nil
 }
 
 // Delete hard-deletes a checkpoint the caller owns (XP/stats reversed, orphaned

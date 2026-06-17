@@ -322,6 +322,24 @@ func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) (
 	return r.collectCheckpoints(rows)
 }
 
+// ListUnassignedByUser returns caller-owned checkpoints that are not in any
+// journey, newest first.
+func (r *Repository) ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error) {
+	query := `SELECT ` + cpListColumns + ` FROM checkpoints
+		 WHERE user_id = $1 AND deleted_at IS NULL AND journey_id IS NULL`
+	args := []any{userID, limit}
+	if cursor != nil {
+		query += ` AND (created_at, id) < ($3::timestamptz, $4::uuid)`
+		args = append(args, cursor.CreatedAt, cursor.ID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT $2`
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list unassigned checkpoints: %w", err)
+	}
+	return r.collectCheckpoints(rows)
+}
+
 // ListInBounds returns checkpoints whose location falls inside the given
 // bounding box (for the map viewport). Uses the GIST index via the && operator.
 func (r *Repository) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error) {
