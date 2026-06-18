@@ -39,13 +39,14 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 func (h *Handler) Popular(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
+	viewerID := optionalViewerID(r)
 	var near *Point
 	if lat, errLat := strconv.ParseFloat(q.Get("lat"), 64); errLat == nil {
 		if lng, errLng := strconv.ParseFloat(q.Get("lng"), 64); errLng == nil {
 			near = &Point{Lat: lat, Lng: lng}
 		}
 	}
-	places, err := h.svc.Popular(r.Context(), near, limit)
+	places, err := h.svc.Popular(r.Context(), near, limit, viewerID)
 	if err != nil {
 		h.listError(w, err)
 		return
@@ -94,13 +95,14 @@ func (h *Handler) FeedFollowing(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
+	viewerID := optionalViewerID(r)
 	var near *Point
 	if lat, errLat := strconv.ParseFloat(q.Get("lat"), 64); errLat == nil {
 		if lng, errLng := strconv.ParseFloat(q.Get("lng"), 64); errLng == nil {
 			near = &Point{Lat: lat, Lng: lng}
 		}
 	}
-	places, err := h.svc.Search(r.Context(), q.Get("q"), near, limit)
+	places, err := h.svc.Search(r.Context(), q.Get("q"), near, limit, viewerID)
 	if err != nil {
 		h.listError(w, err)
 		return
@@ -111,6 +113,7 @@ func (h *Handler) Search(w http.ResponseWriter, r *http.Request) {
 // Nearby returns places near a point (?lat&lng&limit&offset).
 func (h *Handler) Nearby(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	viewerID := optionalViewerID(r)
 	lat, errLat := strconv.ParseFloat(q.Get("lat"), 64)
 	lng, errLng := strconv.ParseFloat(q.Get("lng"), 64)
 	if errLat != nil || errLng != nil {
@@ -119,7 +122,7 @@ func (h *Handler) Nearby(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	places, err := h.svc.ListNearby(r.Context(), lng, lat, limit, offset)
+	places, err := h.svc.ListNearby(r.Context(), lng, lat, limit, offset, viewerID)
 	if err != nil {
 		h.listError(w, err)
 		return
@@ -133,7 +136,7 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 
-	detail, err := h.svc.GetDetail(r.Context(), chi.URLParam(r, "id"), limit, offset)
+	detail, err := h.svc.GetDetail(r.Context(), chi.URLParam(r, "id"), limit, offset, optionalViewerID(r))
 	if errors.Is(err, ErrNotFound) {
 		respond.Error(w, http.StatusNotFound, "place not found")
 		return
@@ -143,6 +146,13 @@ func (h *Handler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, detail)
+}
+
+func optionalViewerID(r *http.Request) *string {
+	if p, ok := authctx.From(r.Context()); ok && p.UserID != "" {
+		return &p.UserID
+	}
+	return nil
 }
 
 func (h *Handler) listError(w http.ResponseWriter, err error) {

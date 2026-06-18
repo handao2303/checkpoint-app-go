@@ -4,15 +4,20 @@ import "time"
 
 // Place is a canonical location aggregated from community check-ins.
 type Place struct {
-	ID           string    `json:"id"`
-	Name         string    `json:"name"`
-	Category     string    `json:"category"`
-	Lat          float64   `json:"lat"`
-	Lng          float64   `json:"lng"`
-	Address      *string   `json:"address,omitempty"`
-	CheckinCount int       `json:"checkin_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                 string    `json:"id"`
+	Name               string    `json:"name"`
+	Category           string    `json:"category"`
+	Lat                float64   `json:"lat"`
+	Lng                float64   `json:"lng"`
+	Address            *string   `json:"address,omitempty"`
+	CheckinCount       int       `json:"checkin_count"`
+	AvgRating          *float64  `json:"avg_rating,omitempty"`
+	ImageCount         int       `json:"image_count"`
+	CoverImageURL      *string   `json:"cover_image_url,omitempty"`
+	CoverThumbnailURL  *string   `json:"cover_thumbnail_url,omitempty"`
+	ViewerHasCheckedIn bool      `json:"viewer_has_checked_in,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // ResolveParams carries the data used to match or create a place during a

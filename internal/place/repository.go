@@ -48,6 +48,88 @@ func collectPlaces(rows pgx.Rows) ([]*Place, error) {
 	return out, rows.Err()
 }
 
+func (r *Repository) enrichPlaces(ctx context.Context, places []*Place, viewerID *string) error {
+	if len(places) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(places))
+	byID := make(map[string]*Place, len(places))
+	for _, p := range places {
+		if p == nil {
+			continue
+		}
+		ids = append(ids, p.ID)
+		byID[p.ID] = p
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	viewer := ""
+	if viewerID != nil {
+		viewer = *viewerID
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT input.place_id,
+			(SELECT AVG(c.rating)::float8
+			 FROM checkpoints c
+			 WHERE c.place_id::text = input.place_id AND c.deleted_at IS NULL) AS avg_rating,
+			(SELECT COUNT(*)::int
+			 FROM checkpoint_images ci
+			 JOIN checkpoints c ON c.id = ci.checkpoint_id
+			 WHERE c.place_id::text = input.place_id AND c.deleted_at IS NULL AND ci.media_type = 'image') AS image_count,
+			(SELECT ci.object_key
+			 FROM checkpoint_images ci
+			 JOIN checkpoints c ON c.id = ci.checkpoint_id
+			 WHERE c.place_id::text = input.place_id AND c.deleted_at IS NULL AND ci.media_type = 'image'
+			 ORDER BY ci.created_at DESC
+			 LIMIT 1) AS cover_image_key,
+			(SELECT COALESCE(ci.thumbnail_key, ci.object_key)
+			 FROM checkpoint_images ci
+			 JOIN checkpoints c ON c.id = ci.checkpoint_id
+			 WHERE c.place_id::text = input.place_id AND c.deleted_at IS NULL AND ci.media_type = 'image'
+			 ORDER BY ci.created_at DESC
+			 LIMIT 1) AS cover_thumbnail_key,
+			EXISTS (
+			 SELECT 1
+			 FROM checkpoints c
+			 WHERE c.place_id::text = input.place_id AND c.deleted_at IS NULL AND c.user_id::text = $2
+			) AS viewer_has_checked_in
+		 FROM unnest($1::text[]) AS input(place_id)`,
+		ids, viewer)
+	if err != nil {
+		return fmt.Errorf("place summaries: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id string
+		var avg *float64
+		var imageCount int
+		var imageKey, thumbnailKey *string
+		var viewerHasCheckedIn bool
+		if err := rows.Scan(&id, &avg, &imageCount, &imageKey, &thumbnailKey, &viewerHasCheckedIn); err != nil {
+			return fmt.Errorf("scan place summary: %w", err)
+		}
+		p := byID[id]
+		if p == nil {
+			continue
+		}
+		p.AvgRating = avg
+		p.ImageCount = imageCount
+		if imageKey != nil {
+			u := storage.PublicURL(r.mediaBase, *imageKey)
+			p.CoverImageURL = &u
+		}
+		if thumbnailKey != nil {
+			u := storage.PublicURL(r.mediaBase, *thumbnailKey)
+			p.CoverThumbnailURL = &u
+		}
+		p.ViewerHasCheckedIn = viewerHasCheckedIn
+	}
+	return rows.Err()
+}
+
 // Repository is the Postgres data layer for places.
 type Repository struct {
 	db        *pgxpool.Pool
@@ -88,7 +170,7 @@ func (r *Repository) ResolveInTx(ctx context.Context, tx pgx.Tx, p ResolveParams
 }
 
 // Search finds places by fuzzy name (pg_trgm), optionally biased toward `near`.
-func (r *Repository) Search(ctx context.Context, q string, near *Point, limit int) ([]*Place, error) {
+func (r *Repository) Search(ctx context.Context, q string, near *Point, limit int, viewerID *string) ([]*Place, error) {
 	if near != nil {
 		rows, err := r.db.Query(ctx,
 			`SELECT `+placeColumns+` FROM places
@@ -99,7 +181,11 @@ func (r *Repository) Search(ctx context.Context, q string, near *Point, limit in
 		if err != nil {
 			return nil, fmt.Errorf("search places (near): %w", err)
 		}
-		return collectPlaces(rows)
+		places, err := collectPlaces(rows)
+		if err != nil {
+			return nil, err
+		}
+		return places, r.enrichPlaces(ctx, places, viewerID)
 	}
 	rows, err := r.db.Query(ctx,
 		`SELECT `+placeColumns+` FROM places
@@ -110,11 +196,15 @@ func (r *Repository) Search(ctx context.Context, q string, near *Point, limit in
 	if err != nil {
 		return nil, fmt.Errorf("search places: %w", err)
 	}
-	return collectPlaces(rows)
+	places, err := collectPlaces(rows)
+	if err != nil {
+		return nil, err
+	}
+	return places, r.enrichPlaces(ctx, places, viewerID)
 }
 
 // ListNearby returns places near a point (lng, lat) ordered from nearest to farthest with offset pagination.
-func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int, offset int) ([]*Place, error) {
+func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int, offset int, viewerID *string) ([]*Place, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT `+placeColumns+` FROM places
 		 ORDER BY location <-> ST_MakePoint($1, $2)::geography
@@ -123,12 +213,16 @@ func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int
 	if err != nil {
 		return nil, fmt.Errorf("list nearby places: %w", err)
 	}
-	return collectPlaces(rows)
+	places, err := collectPlaces(rows)
+	if err != nil {
+		return nil, err
+	}
+	return places, r.enrichPlaces(ctx, places, viewerID)
 }
 
 // GetDetail returns a place plus aggregated community data (avg rating, recent
 // photos, recent reviews) from its check-ins.
-func (r *Repository) GetDetail(ctx context.Context, id string, limit, offset int) (*Detail, error) {
+func (r *Repository) GetDetail(ctx context.Context, id string, limit, offset int, viewerID *string) (*Detail, error) {
 	p, err := scanPlace(r.db.QueryRow(ctx, `SELECT `+placeColumns+` FROM places WHERE id = $1`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -137,11 +231,8 @@ func (r *Repository) GetDetail(ctx context.Context, id string, limit, offset int
 		return nil, fmt.Errorf("get place: %w", err)
 	}
 
-	var avg *float64
-	if err := r.db.QueryRow(ctx,
-		`SELECT AVG(rating)::float8 FROM checkpoints WHERE place_id = $1 AND deleted_at IS NULL`,
-		id).Scan(&avg); err != nil {
-		return nil, fmt.Errorf("place avg rating: %w", err)
+	if err := r.enrichPlaces(ctx, []*Place{p}, viewerID); err != nil {
+		return nil, err
 	}
 
 	// Recent check‑ins – same shape as FeedItem but without distance.
@@ -150,7 +241,12 @@ func (r *Repository) GetDetail(ctx context.Context, id string, limit, offset int
 		return nil, err
 	}
 
-	return &Detail{Place: p, AvgRating: avg, Checkins: checkins}, nil
+	images, err := r.recentImages(ctx, id, 12)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Detail{Place: p, AvgRating: p.AvgRating, Images: images, Checkins: checkins}, nil
 }
 
 // recentCheckins returns the most recent checkpoints for a place.
@@ -226,7 +322,7 @@ func (r *Repository) recentImages(ctx context.Context, placeID string, limit int
 }
 
 // Popular returns the most checked-in places, optionally within radiusM of near.
-func (r *Repository) Popular(ctx context.Context, near *Point, radiusM float64, limit int) ([]*Place, error) {
+func (r *Repository) Popular(ctx context.Context, near *Point, radiusM float64, limit int, viewerID *string) ([]*Place, error) {
 	if near != nil {
 		rows, err := r.db.Query(ctx,
 			`SELECT `+placeColumns+` FROM places
@@ -236,14 +332,22 @@ func (r *Repository) Popular(ctx context.Context, near *Point, radiusM float64, 
 		if err != nil {
 			return nil, fmt.Errorf("popular places (near): %w", err)
 		}
-		return collectPlaces(rows)
+		places, err := collectPlaces(rows)
+		if err != nil {
+			return nil, err
+		}
+		return places, r.enrichPlaces(ctx, places, viewerID)
 	}
 	rows, err := r.db.Query(ctx,
 		`SELECT `+placeColumns+` FROM places ORDER BY checkin_count DESC, created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("popular places: %w", err)
 	}
-	return collectPlaces(rows)
+	places, err := collectPlaces(rows)
+	if err != nil {
+		return nil, err
+	}
+	return places, r.enrichPlaces(ctx, places, viewerID)
 }
 
 // feedSelect is the column list shared by Feed and FeedFollowing (distance is
