@@ -7,6 +7,7 @@ import (
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
+	"github.com/quanluon/checkpoint-app/internal/place"
 )
 
 type checkpointService interface {
@@ -22,19 +23,25 @@ type identityService interface {
 	GetByID(ctx context.Context, id string) (*identity.User, error)
 }
 
+type placeService interface {
+	GetDetail(ctx context.Context, id string, limit int, offset int, viewerID *string) (*place.Detail, error)
+}
+
 // Service provides share-specific data aggregation logic.
 type Service struct {
 	checkpointSvc checkpointService
 	journeySvc    journeyService
 	identitySvc   identityService
+	placeSvc      placeService
 }
 
 // NewService constructs a new Share Service.
-func NewService(cp checkpointService, j journeyService, id identityService) *Service {
+func NewService(cp checkpointService, j journeyService, id identityService, p placeService) *Service {
 	return &Service{
 		checkpointSvc: cp,
 		journeySvc:    j,
 		identitySvc:   id,
+		placeSvc:      p,
 	}
 }
 
@@ -165,5 +172,35 @@ func (s *Service) GetUserMeta(ctx context.Context, username, frontendURL string)
 		Type:        "profile",
 		URL:         fmt.Sprintf("%s/u/%s", frontendURL, username),
 		RedirectURL: fmt.Sprintf("%s/u/%s", frontendURL, username),
+	}, nil
+}
+
+// GetPlaceMeta aggregates metadata for a place share.
+func (s *Service) GetPlaceMeta(ctx context.Context, id, frontendURL string) (*MetaData, error) {
+	detail, err := s.placeSvc.GetDetail(ctx, id, 1, 0, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get place detail: %w", err)
+	}
+
+	title := detail.Place.Name
+	description := fmt.Sprintf("Khám phá địa điểm du lịch %s cùng Checkpoint App. Đã có %d lượt cắm cờ check-in tại đây.", detail.Place.Name, detail.Place.CheckinCount)
+	if detail.Place.Address != nil && *detail.Place.Address != "" {
+		description = fmt.Sprintf("Địa chỉ: %s. %s", *detail.Place.Address, description)
+	}
+
+	image := frontendURL + "/icon-512.png"
+	if detail.Place.CoverImageURL != nil && *detail.Place.CoverImageURL != "" {
+		image = *detail.Place.CoverImageURL
+	} else if len(detail.Images) > 0 {
+		image = detail.Images[0].URL
+	}
+
+	return &MetaData{
+		Title:       title,
+		Description: description,
+		Image:       image,
+		Type:        "website",
+		URL:         fmt.Sprintf("%s/p/%s", frontendURL, id),
+		RedirectURL: fmt.Sprintf("%s/p/%s", frontendURL, id),
 	}, nil
 }

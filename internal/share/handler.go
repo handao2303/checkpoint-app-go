@@ -77,6 +77,7 @@ func (h *Handler) Register(r chi.Router) {
 	r.Get("/share/checkpoint/{id}", h.ShareCheckpoint)
 	r.Get("/share/journey/{id}", h.ShareJourney)
 	r.Get("/share/user/{username}", h.ShareUser)
+	r.Get("/share/place/{id}", h.SharePlace)
 }
 
 const shareCacheTTL = 10 * time.Minute
@@ -149,6 +150,22 @@ func (h *Handler) ShareUser(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("share: error getting user profile meta: %v", err)
 		http.Redirect(w, r, h.frontendURL+"/u/"+username, http.StatusFound)
+		return
+	}
+
+	h.respondShare(w, r, meta)
+}
+
+// SharePlace handles place share links.
+func (h *Handler) SharePlace(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	key := "share:meta:place:" + id
+	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
+		return h.svc.GetPlaceMeta(r.Context(), id, h.frontendURL)
+	})
+	if err != nil {
+		log.Printf("share: error getting place meta: %v", err)
+		http.Redirect(w, r, h.frontendURL+"/p/"+id, http.StatusFound)
 		return
 	}
 

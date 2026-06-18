@@ -3,11 +3,13 @@ package share
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
+	"github.com/quanluon/checkpoint-app/internal/place"
 )
 
 type mockCheckpointService struct {
@@ -54,6 +56,18 @@ func (m *mockIdentityService) GetByID(ctx context.Context, id string) (*identity
 	return m.userByID, nil
 }
 
+type mockPlaceService struct {
+	detail *place.Detail
+	err    error
+}
+
+func (m *mockPlaceService) GetDetail(ctx context.Context, id string, limit int, offset int, viewerID *string) (*place.Detail, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.detail, nil
+}
+
 func TestGetCheckpointMeta(t *testing.T) {
 	displayName := "Nguyen Van A"
 	note := "Di phuot vui qua!"
@@ -75,7 +89,7 @@ func TestGetCheckpointMeta(t *testing.T) {
 	mockJourney := &mockJourneyService{}
 	mockIdentity := &mockIdentityService{}
 
-	svc := NewService(mockCP, mockJourney, mockIdentity)
+	svc := NewService(mockCP, mockJourney, mockIdentity, &mockPlaceService{})
 
 	meta, err := svc.GetCheckpointMeta(context.Background(), "cp-1", "https://checkpoint.app")
 	if err != nil {
@@ -119,7 +133,7 @@ func TestGetJourneyMeta(t *testing.T) {
 		},
 	}
 
-	svc := NewService(mockCP, mockJourney, mockIdentity)
+	svc := NewService(mockCP, mockJourney, mockIdentity, &mockPlaceService{})
 
 	meta, err := svc.GetJourneyMeta(context.Background(), "j-1", "https://checkpoint.app")
 	if err != nil {
@@ -149,7 +163,7 @@ func TestGetUserMeta(t *testing.T) {
 	mockJourney := &mockJourneyService{}
 	mockIdentity := &mockIdentityService{user: user}
 
-	svc := NewService(mockCP, mockJourney, mockIdentity)
+	svc := NewService(mockCP, mockJourney, mockIdentity, &mockPlaceService{})
 
 	meta, err := svc.GetUserMeta(context.Background(), "phuotthu", "https://checkpoint.app")
 	if err != nil {
@@ -169,10 +183,49 @@ func TestGetUserMeta(t *testing.T) {
 
 func TestGetCheckpointMeta_NotFound(t *testing.T) {
 	mockCP := &mockCheckpointService{err: errors.New("not found")}
-	svc := NewService(mockCP, &mockJourneyService{}, &mockIdentityService{})
+	svc := NewService(mockCP, &mockJourneyService{}, &mockIdentityService{}, &mockPlaceService{})
 
 	_, err := svc.GetCheckpointMeta(context.Background(), "cp-invalid", "https://checkpoint.app")
 	if err == nil {
 		t.Error("expected error, got nil")
+	}
+}
+
+func TestGetPlaceMeta(t *testing.T) {
+	address := "123 Le Loi, Vung Tau"
+	placeDetail := &place.Detail{
+		Place: &place.Place{
+			Name:         "Vung Tau Lighthouse",
+			CheckinCount: 15,
+			Address:      &address,
+		},
+		Images: []place.DetailImage{
+			{URL: "https://r2.dev/place1.jpg"},
+		},
+	}
+
+	mockCP := &mockCheckpointService{}
+	mockJourney := &mockJourneyService{}
+	mockIdentity := &mockIdentityService{}
+	mockPlace := &mockPlaceService{detail: placeDetail}
+
+	svc := NewService(mockCP, mockJourney, mockIdentity, mockPlace)
+
+	meta, err := svc.GetPlaceMeta(context.Background(), "place-1", "https://checkpoint.app")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if meta.Title != "Vung Tau Lighthouse" {
+		t.Errorf("wrong title: %s", meta.Title)
+	}
+	if !strings.Contains(meta.Description, "Khám phá địa điểm du lịch Vung Tau Lighthouse") {
+		t.Errorf("wrong description: %s", meta.Description)
+	}
+	if meta.Image != "https://r2.dev/place1.jpg" {
+		t.Errorf("wrong image: %s", meta.Image)
+	}
+	if meta.RedirectURL != "https://checkpoint.app/p/place-1" {
+		t.Errorf("wrong redirect url: %s", meta.RedirectURL)
 	}
 }

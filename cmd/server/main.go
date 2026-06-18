@@ -126,7 +126,8 @@ func run() error {
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
 	gamificationRepo := gamification.NewRepository(pool, cfg.r2.PublicURL, redisClient)
 	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo, redisClient))
-	placeHandler := place.NewHandler(place.NewService(placeRepo))
+	placeSvc := place.NewService(placeRepo)
+	placeHandler := place.NewHandler(placeSvc)
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeySvc := journey.NewService(journeyRepo)
 	journeyHandler := journey.NewHandler(journeySvc)
@@ -144,7 +145,7 @@ func run() error {
 	}
 	cpHandler := checkpoint.NewHandler(cpSvc).WithMedia(mediaPublisher, mediaProcessor)
 
-	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc)
+	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc, placeSvc)
 	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL, redisClient)
 	var driveHandler *gdrive.Handler
 	var driveSyncer *gdrive.Syncer
