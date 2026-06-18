@@ -21,6 +21,7 @@ type reader interface {
 	TopByXP(ctx context.Context, limit int) ([]LeaderboardEntry, error)
 	RankOf(ctx context.Context, userID string) (*LeaderboardEntry, error)
 	Badges(ctx context.Context, userID string) ([]UserBadge, error)
+	UserIDByUsername(ctx context.Context, username string) (string, error)
 }
 
 // Service holds gamification read-model business logic.
@@ -38,6 +39,15 @@ func NewService(repo reader, redisClient redis.Cmdable) *Service {
 
 // Passport returns the user's province stamps.
 func (s *Service) Passport(ctx context.Context, userID string) (*Passport, error) {
+	return s.repo.Passport(ctx, userID)
+}
+
+// PassportByUsername returns the user's province stamps by their username.
+func (s *Service) PassportByUsername(ctx context.Context, username string) (*Passport, error) {
+	userID, err := s.repo.UserIDByUsername(ctx, username)
+	if err != nil {
+		return nil, err
+	}
 	return s.repo.Passport(ctx, userID)
 }
 

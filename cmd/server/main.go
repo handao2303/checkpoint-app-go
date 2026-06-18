@@ -242,7 +242,7 @@ func run() error {
 	reactionHandler.Register(r, authenticated, optionalAuth)
 	placeHandler.Register(r, authenticated, optionalAuth)
 	journeyHandler.Register(r, authenticated, optionalAuth)
-	gamificationHandler.Register(r, authenticated)
+	gamificationHandler.Register(r, authenticated, optionalAuth)
 	googlePlacesHandler.Register(r, authenticated)
 	shareHandler.Register(r)
 	if driveHandler != nil {

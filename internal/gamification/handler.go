@@ -20,13 +20,14 @@ func NewHandler(svc *Service) *Handler {
 }
 
 // Register mounts gamification routes behind the auth middleware.
-func (h *Handler) Register(r chi.Router, auth func(http.Handler) http.Handler) {
+func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth)
 		r.Get("/me/passport", h.Passport)
 		r.Get("/me/badges", h.Badges)
 		r.Get("/leaderboard", h.Leaderboard)
 	})
+	r.With(optionalAuth).Get("/users/{username}/passport", h.UserPassport)
 }
 
 // Passport returns the caller's province stamps.
@@ -60,4 +61,15 @@ func (h *Handler) Leaderboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, board)
+}
+
+// UserPassport returns a specific user's province stamps by username.
+func (h *Handler) UserPassport(w http.ResponseWriter, r *http.Request) {
+	username := chi.URLParam(r, "username")
+	passport, err := h.svc.PassportByUsername(r.Context(), username)
+	if err != nil {
+		respond.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+	respond.JSON(w, http.StatusOK, passport)
 }

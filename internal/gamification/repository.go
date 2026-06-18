@@ -271,3 +271,14 @@ func (r *Repository) RankOf(ctx context.Context, userID string) (*LeaderboardEnt
 	}
 	return &e, nil
 }
+
+// UserIDByUsername returns the user ID for an active user with the given username.
+func (r *Repository) UserIDByUsername(ctx context.Context, username string) (string, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `SELECT id FROM users WHERE username = $1 AND deleted_at IS NULL`, username).Scan(&id)
+	if err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
