@@ -81,7 +81,7 @@ func (r *Repository) invalidateLeaderboard(ctx context.Context) {
 // for legacy rows.
 func (r *Repository) Passport(ctx context.Context, userID string) (*Passport, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT g.province_key, g.display_name, g.checkin_count, g.first_at, g.last_at,
+		`SELECT g.province_key, g.display_name, g.province_code, g.checkin_count, g.first_at, g.last_at,
                         (SELECT c2.thumbnail_key
                            FROM checkpoints c2
                           WHERE c2.user_id = $1 AND c2.deleted_at IS NULL
@@ -91,6 +91,7 @@ func (r *Repository) Passport(ctx context.Context, userID string) (*Passport, er
                    FROM (
                      SELECT COALESCE(province_code, province) AS province_key,
                             MAX(province) AS display_name,
+                            MAX(province_code) AS province_code,
                             COUNT(*) AS checkin_count,
                             MIN(created_at) AS first_at, MAX(created_at) AS last_at
                        FROM checkpoints
@@ -109,7 +110,7 @@ func (r *Repository) Passport(ctx context.Context, userID string) (*Passport, er
 		var s PassportStamp
 		var provinceKey string // we group by this but don't return it to UI
 		var coverKey *string
-		if err := rows.Scan(&provinceKey, &s.Province, &s.CheckinCount, &s.FirstAt, &s.LastAt, &coverKey); err != nil {
+		if err := rows.Scan(&provinceKey, &s.Province, &s.ProvinceCode, &s.CheckinCount, &s.FirstAt, &s.LastAt, &coverKey); err != nil {
 			return nil, fmt.Errorf("scan passport stamp: %w", err)
 		}
 		if coverKey != nil {

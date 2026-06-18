@@ -311,7 +311,18 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Checkpoint, error
 }
 
 // ListByUser returns a user's checkpoints (newest first) with cover image URLs.
-func (r *Repository) ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
+func (r *Repository) ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error) {
+	if provinceCode != "" {
+		rows, err := r.db.Query(ctx,
+			`SELECT `+cpListColumns+` FROM checkpoints
+			 WHERE user_id = $1 AND deleted_at IS NULL AND province_code = $2
+			 ORDER BY created_at DESC LIMIT $3`, userID, provinceCode, limit)
+		if err != nil {
+			return nil, fmt.Errorf("list checkpoints by province: %w", err)
+		}
+		return r.collectCheckpoints(rows)
+	}
+
 	rows, err := r.db.Query(ctx,
 		`SELECT `+cpListColumns+` FROM checkpoints
 		 WHERE user_id = $1 AND deleted_at IS NULL

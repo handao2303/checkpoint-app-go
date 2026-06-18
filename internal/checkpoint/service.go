@@ -40,7 +40,7 @@ type repository interface {
 	Create(ctx context.Context, p CreateParams) (*CreateResult, error)
 	GetByID(ctx context.Context, id string) (*Checkpoint, error)
 	GetDetail(ctx context.Context, id string) (*Detail, error)
-	ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error)
+	ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error)
 	ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error)
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
@@ -509,19 +509,19 @@ func (s *Service) LinkImages(ctx context.Context, checkpointID, userID string, k
 
 // ListByUser returns a user's checkpoints, newest first (limit clamped to
 // [1, maxListLimit]). Checkpoints are public, so no ownership check.
-func (s *Service) ListByUser(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
+func (s *Service) ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error) {
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
 	if limit > maxListLimit {
 		limit = maxListLimit
 	}
-	return s.repo.ListByUser(ctx, userID, limit)
+	return s.repo.ListByUser(ctx, userID, provinceCode, limit)
 }
 
 // ListMine returns the caller's checkpoints.
-func (s *Service) ListMine(ctx context.Context, userID string, limit int) ([]*Checkpoint, error) {
-	return s.ListByUser(ctx, userID, limit)
+func (s *Service) ListMine(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error) {
+	return s.ListByUser(ctx, userID, provinceCode, limit)
 }
 
 // ListMineUnassigned returns caller-owned checkpoints that are not attached to a

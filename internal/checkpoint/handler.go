@@ -261,7 +261,8 @@ func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
 		respond.JSON(w, http.StatusOK, page)
 		return
 	}
-	list, err := h.svc.ListMine(r.Context(), p.UserID, limit)
+	provinceCode := r.URL.Query().Get("province_code")
+	list, err := h.svc.ListMine(r.Context(), p.UserID, provinceCode, limit)
 	if err != nil {
 		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
 		return
@@ -278,7 +279,8 @@ func (h *Handler) ListByUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	list, err := h.svc.ListByUser(r.Context(), userID, limit)
+	provinceCode := r.URL.Query().Get("province_code")
+	list, err := h.svc.ListByUser(r.Context(), userID, provinceCode, limit)
 	if err != nil {
 		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
 		return

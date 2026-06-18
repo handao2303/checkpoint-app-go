@@ -37,7 +37,7 @@ func (f *fakeRepo) GetByID(context.Context, string) (*Checkpoint, error) {
 	return nil, ErrNotFound
 }
 func (f *fakeRepo) GetDetail(context.Context, string) (*Detail, error)             { return nil, ErrNotFound }
-func (f *fakeRepo) ListByUser(context.Context, string, int) ([]*Checkpoint, error) { return nil, nil }
+func (f *fakeRepo) ListByUser(context.Context, string, string, int) ([]*Checkpoint, error) { return nil, nil }
 func (f *fakeRepo) ListUnassignedByUser(context.Context, string, int, *CheckpointCursor) ([]*Checkpoint, error) {
 	return nil, nil
 }

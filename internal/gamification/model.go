@@ -21,6 +21,7 @@ type XPEvent struct {
 // PassportStamp is one province the user has visited, for the digital passport.
 type PassportStamp struct {
 	Province     string    `json:"province"`
+	ProvinceCode *string   `json:"province_code"`
 	CheckinCount int       `json:"checkin_count"`
 	FirstAt      time.Time `json:"first_at"`
 	LastAt       time.Time `json:"last_at"`
