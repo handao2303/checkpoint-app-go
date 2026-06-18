@@ -124,8 +124,8 @@ func run() error {
 	identityHandler := identity.NewHandler(identitySvc)
 
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
-	gamificationRepo := gamification.NewRepository(pool, cfg.r2.PublicURL)
-	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo))
+	gamificationRepo := gamification.NewRepository(pool, cfg.r2.PublicURL, redisClient)
+	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo, redisClient))
 	placeHandler := place.NewHandler(place.NewService(placeRepo))
 	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
 	journeySvc := journey.NewService(journeyRepo)

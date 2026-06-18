@@ -2,9 +2,11 @@ package gamification
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -23,14 +25,15 @@ type reader interface {
 
 // Service holds gamification read-model business logic.
 type Service struct {
-	repo reader
-	lb   *lbCache
-	sf   singleflight.Group
+	repo  reader
+	redis redis.Cmdable
+	lb    *lbCache
+	sf    singleflight.Group
 }
 
 // NewService builds the gamification service.
-func NewService(repo reader) *Service {
-	return &Service{repo: repo, lb: newLBCache(leaderboardTTL)}
+func NewService(repo reader, redisClient redis.Cmdable) *Service {
+	return &Service{repo: repo, redis: usableRedis(redisClient), lb: newLBCache(leaderboardTTL)}
 }
 
 // Passport returns the user's province stamps.
@@ -46,9 +49,15 @@ func (s *Service) Badges(ctx context.Context, userID string) ([]UserBadge, error
 // Leaderboard returns the global top users (cached + single-flighted, since the
 // list is identical for everyone) plus the caller's own rank.
 func (s *Service) Leaderboard(ctx context.Context, userID string) (*Leaderboard, error) {
-	top, ok := s.lb.get()
+	top, ok := s.getRedisLeaderboard(ctx)
 	if !ok {
-		v, err, _ := s.sf.Do("leaderboard:top", func() (any, error) {
+		top, ok = s.lb.get()
+	}
+	if !ok {
+		v, err, _ := s.sf.Do(leaderboardTopCacheKey, func() (any, error) {
+			if cached, ok := s.getRedisLeaderboard(ctx); ok {
+				return cached, nil
+			}
 			if cached, ok := s.lb.get(); ok {
 				return cached, nil
 			}
@@ -56,6 +65,7 @@ func (s *Service) Leaderboard(ctx context.Context, userID string) (*Leaderboard,
 			if err != nil {
 				return nil, err
 			}
+			s.setRedisLeaderboard(ctx, entries)
 			s.lb.set(entries)
 			return entries, nil
 		})
@@ -70,6 +80,32 @@ func (s *Service) Leaderboard(ctx context.Context, userID string) (*Leaderboard,
 		return nil, err
 	}
 	return &Leaderboard{Entries: top, Me: me}, nil
+}
+
+func (s *Service) getRedisLeaderboard(ctx context.Context) ([]LeaderboardEntry, bool) {
+	if s.redis == nil {
+		return nil, false
+	}
+	raw, err := s.redis.Get(ctx, leaderboardTopCacheKey).Result()
+	if err != nil {
+		return nil, false
+	}
+	var entries []LeaderboardEntry
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
+		return nil, false
+	}
+	return entries, true
+}
+
+func (s *Service) setRedisLeaderboard(ctx context.Context, entries []LeaderboardEntry) {
+	if s.redis == nil {
+		return
+	}
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		return
+	}
+	_ = s.redis.Set(ctx, leaderboardTopCacheKey, payload, leaderboardTTL).Err()
 }
 
 // lbCache is a single-entry TTL cache for the global leaderboard top list.
