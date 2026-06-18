@@ -1,11 +1,15 @@
 package journey
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
+	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/quanluon/checkpoint-app/pkg/authctx"
 	"github.com/quanluon/checkpoint-app/pkg/respond"
@@ -13,12 +17,24 @@ import (
 
 // Handler exposes the journey domain over HTTP.
 type Handler struct {
-	svc *Service
+	svc              *Service
+	cleanupPublisher MediaCleanupPublisher
 }
 
 // NewHandler builds a journey HTTP handler.
 func NewHandler(svc *Service) *Handler {
 	return &Handler{svc: svc}
+}
+
+// MediaCleanupPublisher enqueues object-storage cleanup after DB deletes commit.
+type MediaCleanupPublisher interface {
+	PublishMediaCleanup(ctx context.Context, keys []string) error
+}
+
+// WithMediaCleanup attaches async media cleanup. Nil is allowed.
+func (h *Handler) WithMediaCleanup(publisher MediaCleanupPublisher) *Handler {
+	h.cleanupPublisher = publisher
+	return h
 }
 
 // Register mounts journey routes under /journeys. GET /{id} uses optionalAuth so
@@ -95,14 +111,55 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, j)
 }
 
-// Delete soft-deletes the caller's journey.
+// Delete soft-deletes the caller's journey. By default it detaches checkpoints;
+// ?checkpoints=delete hard-deletes attached checkpoints and defers media cleanup.
 func (h *Handler) Delete(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
-	if err := h.svc.Delete(r.Context(), chi.URLParam(r, "id"), p.UserID); err != nil {
+	journeyID := chi.URLParam(r, "id")
+	mode, err := deleteModeFromQuery(r.URL.Query().Get("checkpoints"))
+	if err != nil {
+		respond.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	started := time.Now()
+	result, err := h.svc.Delete(r.Context(), journeyID, p.UserID, mode)
+	if err != nil {
+		log.Printf(
+			"journey: delete failed request_id=%s journey_id=%s user_id=%s checkpoints_mode=%s duration=%s error=%+v",
+			chimw.GetReqID(r.Context()),
+			journeyID,
+			p.UserID,
+			mode,
+			time.Since(started),
+			err,
+		)
 		h.writeError(w, err, "could not delete journey")
 		return
 	}
+	if mode == DeleteHardCheckpoints && h.cleanupPublisher != nil && len(result.MediaKeys) > 0 {
+		if err := h.cleanupPublisher.PublishMediaCleanup(r.Context(), result.MediaKeys); err != nil {
+			log.Printf(
+				"journey: publish media cleanup failed request_id=%s journey_id=%s user_id=%s media_keys=%d error=%+v",
+				chimw.GetReqID(r.Context()),
+				journeyID,
+				p.UserID,
+				len(result.MediaKeys),
+				err,
+			)
+		}
+	}
 	respond.JSON(w, http.StatusNoContent, nil)
+}
+
+func deleteModeFromQuery(raw string) (DeleteMode, error) {
+	switch raw {
+	case "", string(DeleteDetachCheckpoints):
+		return DeleteDetachCheckpoints, nil
+	case string(DeleteHardCheckpoints):
+		return DeleteHardCheckpoints, nil
+	default:
+		return "", errors.New("invalid checkpoints mode")
+	}
 }
 
 // AssignCheckpoint attaches a checkpoint to the journey.

@@ -40,7 +40,9 @@ type repository interface {
 	Create(ctx context.Context, p CreateParams) (*CreateResult, error)
 	GetByID(ctx context.Context, id string) (*Checkpoint, error)
 	GetDetail(ctx context.Context, id string) (*Detail, error)
+	Update(ctx context.Context, id, userID string, p UpdateParams) (*Checkpoint, error)
 	ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error)
+	ListByUserPage(ctx context.Context, userID string, provinceCode string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error)
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
@@ -92,6 +94,13 @@ type Input struct {
 	JourneyID    *string
 	// Images are media keys already uploaded directly to R2. Required (≥1).
 	Images []ImageKeys
+}
+
+// UpdateInput is the editable checkpoint content surface.
+type UpdateInput struct {
+	Name   string
+	Note   *string
+	Rating *int16
 }
 
 // CheckpointCursor is a keyset cursor for checkpoint lists ordered by newest
@@ -184,6 +193,25 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 // GetDetail returns a checkpoint with images and author.
 func (s *Service) GetDetail(ctx context.Context, id string) (*Detail, error) {
 	return s.repo.GetDetail(ctx, id)
+}
+
+// Update edits a caller-owned checkpoint's content. It deliberately does not
+// touch location, media, place, journey, XP, or counters.
+func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput) (*Checkpoint, error) {
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	if in.Rating != nil && (*in.Rating < 1 || *in.Rating > 5) {
+		return nil, fmt.Errorf("%w: rating must be 1..5", ErrInvalidInput)
+	}
+	var note *string
+	if in.Note != nil {
+		if trimmed := strings.TrimSpace(*in.Note); trimmed != "" {
+			note = &trimmed
+		}
+	}
+	return s.repo.Update(ctx, id, userID, UpdateParams{Name: name, Note: note, Rating: in.Rating})
 }
 
 // IncrementView records one view of a checkpoint and returns the new total.
@@ -519,9 +547,19 @@ func (s *Service) ListByUser(ctx context.Context, userID string, provinceCode st
 	return s.repo.ListByUser(ctx, userID, provinceCode, limit)
 }
 
-// ListMine returns the caller's checkpoints.
-func (s *Service) ListMine(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error) {
-	return s.ListByUser(ctx, userID, provinceCode, limit)
+// ListMine returns the caller's checkpoints as a keyset-paginated page.
+func (s *Service) ListMine(ctx context.Context, userID string, provinceCode string, limit int, cursor *CheckpointCursor) (*CheckpointPage, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	if limit > maxListLimit {
+		limit = maxListLimit
+	}
+	list, err := s.repo.ListByUserPage(ctx, userID, provinceCode, limit+1, cursor)
+	if err != nil {
+		return nil, err
+	}
+	return checkpointPage(list, limit), nil
 }
 
 // ListMineUnassigned returns caller-owned checkpoints that are not attached to a
@@ -537,6 +575,10 @@ func (s *Service) ListMineUnassigned(ctx context.Context, userID string, limit i
 	if err != nil {
 		return nil, err
 	}
+	return checkpointPage(list, limit), nil
+}
+
+func checkpointPage(list []*Checkpoint, limit int) *CheckpointPage {
 	page := &CheckpointPage{Checkpoints: list}
 	if len(list) > limit {
 		page.Checkpoints = list[:limit]
@@ -544,7 +586,7 @@ func (s *Service) ListMineUnassigned(ctx context.Context, userID string, limit i
 		next := last.CreatedAt.Format(time.RFC3339Nano) + "|" + last.ID
 		page.NextCursor = &next
 	}
-	return page, nil
+	return page
 }
 
 // Delete hard-deletes a checkpoint the caller owns (XP/stats reversed, orphaned

@@ -11,6 +11,8 @@ type fakeRepo struct {
 	assignedUserID    string
 	assignedIDs       []string
 	assignErr         error
+	deleteMode        DeleteMode
+	deleteResult      *DeleteResult
 }
 
 func (f *fakeRepo) Create(context.Context, CreateParams) (*Journey, error) {
@@ -31,8 +33,12 @@ func (f *fakeRepo) Update(context.Context, string, string, *string, *string) (*J
 func (f *fakeRepo) SetActive(context.Context, string, string, bool) (*Journey, error) {
 	return nil, nil
 }
-func (f *fakeRepo) Delete(context.Context, string, string) error {
-	return nil
+func (f *fakeRepo) Delete(_ context.Context, _ string, _ string, mode DeleteMode) (*DeleteResult, error) {
+	f.deleteMode = mode
+	if f.deleteResult != nil {
+		return f.deleteResult, nil
+	}
+	return &DeleteResult{}, nil
 }
 func (f *fakeRepo) AssignCheckpoint(context.Context, string, string, string) error {
 	return nil
@@ -74,5 +80,32 @@ func TestServiceAssignCheckpointsRejectsDuplicate(t *testing.T) {
 	err := NewService(&fakeRepo{}).AssignCheckpoints(context.Background(), "journey-1", []string{"cp-1", "cp-1"}, "user-1")
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("AssignCheckpoints error = %v, want ErrInvalidInput", err)
+	}
+}
+
+func TestServiceDeleteDefaultsToDetach(t *testing.T) {
+	repo := &fakeRepo{}
+	if _, err := NewService(repo).Delete(context.Background(), "journey-1", "user-1", ""); err != nil {
+		t.Fatalf("Delete error = %v", err)
+	}
+	if repo.deleteMode != DeleteDetachCheckpoints {
+		t.Fatalf("deleteMode = %q, want %q", repo.deleteMode, DeleteDetachCheckpoints)
+	}
+}
+
+func TestServiceDeleteAllowsHardCheckpointDelete(t *testing.T) {
+	repo := &fakeRepo{}
+	if _, err := NewService(repo).Delete(context.Background(), "journey-1", "user-1", DeleteHardCheckpoints); err != nil {
+		t.Fatalf("Delete error = %v", err)
+	}
+	if repo.deleteMode != DeleteHardCheckpoints {
+		t.Fatalf("deleteMode = %q, want %q", repo.deleteMode, DeleteHardCheckpoints)
+	}
+}
+
+func TestServiceDeleteRejectsInvalidMode(t *testing.T) {
+	_, err := NewService(&fakeRepo{}).Delete(context.Background(), "journey-1", "user-1", "bogus")
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Delete error = %v, want ErrInvalidInput", err)
 	}
 }

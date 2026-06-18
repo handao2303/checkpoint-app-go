@@ -128,22 +128,25 @@ func run() error {
 	gamificationHandler := gamification.NewHandler(gamification.NewService(gamificationRepo, redisClient))
 	placeSvc := place.NewService(placeRepo)
 	placeHandler := place.NewHandler(placeSvc)
-	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL)
+	journeyRepo := journey.NewRepository(pool, cfg.r2.PublicURL, gamificationRepo)
 	journeySvc := journey.NewService(journeyRepo)
-	journeyHandler := journey.NewHandler(journeySvc)
 	cpRepo := checkpoint.NewRepository(pool, cfg.r2.PublicURL, placeRepo, gamificationRepo, redisClient)
 	cpSvc := checkpoint.NewService(cpRepo, r2, journeyRepo)
 	// Async media pipeline: publish jobs to Pub/Sub (worker transcodes); when
 	// Pub/Sub is unset (local dev) the handler falls back to the inline processor.
 	mediaProcessor := checkpoint.NewProcessor(cpRepo, r2)
-	var mediaPublisher checkpoint.MediaPublisher
-	if pub := pubsub.New(cfg.gcpProject, cfg.pubsubTopic); pub.Enabled() {
-		mediaPublisher = pub
+	mediaPublisher := pubsub.New(cfg.gcpProject, cfg.pubsubTopic)
+	var checkpointPublisher checkpoint.MediaPublisher
+	var cleanupPublisher journey.MediaCleanupPublisher
+	if mediaPublisher.Enabled() {
+		checkpointPublisher = mediaPublisher
+		cleanupPublisher = mediaPublisher
 		log.Printf("media pipeline: publishing to Pub/Sub topic %q", cfg.pubsubTopic)
 	} else {
 		log.Printf("media pipeline: Pub/Sub disabled — processing media inline")
 	}
-	cpHandler := checkpoint.NewHandler(cpSvc).WithMedia(mediaPublisher, mediaProcessor)
+	cpHandler := checkpoint.NewHandler(cpSvc).WithMedia(checkpointPublisher, mediaProcessor)
+	journeyHandler := journey.NewHandler(journeySvc).WithMediaCleanup(cleanupPublisher)
 
 	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc, placeSvc)
 	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL, redisClient)

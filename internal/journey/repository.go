@@ -14,15 +14,24 @@ import (
 // ErrNotFound is returned when a journey doesn't exist (or isn't the caller's).
 var ErrNotFound = errors.New("journey not found")
 
+type gamificationTx interface {
+	ReverseCheckinDeletesTx(ctx context.Context, tx pgx.Tx, userID string, checkpointIDs []string, xpAwards []int) error
+}
+
 // Repository is the Postgres data layer for journeys.
 type Repository struct {
 	db        *pgxpool.Pool
 	mediaBase string // R2 public base URL, prepended to image keys on read
+	xp        gamificationTx
 }
 
 // NewRepository builds a journey repository over a pgx pool.
-func NewRepository(db *pgxpool.Pool, mediaBase string) *Repository {
-	return &Repository{db: db, mediaBase: mediaBase}
+func NewRepository(db *pgxpool.Pool, mediaBase string, xp ...gamificationTx) *Repository {
+	var tx gamificationTx
+	if len(xp) > 0 {
+		tx = xp[0]
+	}
+	return &Repository{db: db, mediaBase: mediaBase, xp: tx}
 }
 
 const journeyColumns = `id, user_id, title, description, is_active, started_at, ended_at, created_at, updated_at`
@@ -124,12 +133,12 @@ func (r *Repository) SetActive(ctx context.Context, id, userID string, active bo
 	return getJourney(r.db.QueryRow(ctx, query, id, userID), "set journey active")
 }
 
-// Delete soft-deletes an owned journey, detaches its check-ins, and decrements
-// the user's journey_count.
-func (r *Repository) Delete(ctx context.Context, id, userID string) (err error) {
+// Delete soft-deletes an owned journey. Depending on mode, it either detaches
+// check-ins or hard-deletes them and returns media keys for deferred cleanup.
+func (r *Repository) Delete(ctx context.Context, id, userID string, mode DeleteMode) (result *DeleteResult, err error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -137,23 +146,165 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (err error) 
 		`UPDATE journeys SET deleted_at = NOW(), is_active = false, updated_at = NOW()
 		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`, id, userID)
 	if err != nil {
-		return fmt.Errorf("delete journey: %w", err)
+		return nil, fmt.Errorf("delete journey: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, `UPDATE checkpoints SET journey_id = NULL, journey_order = NULL WHERE journey_id = $1`, id); err != nil {
-		return fmt.Errorf("detach checkpoints: %w", err)
+	result = &DeleteResult{}
+	switch mode {
+	case DeleteDetachCheckpoints:
+		if _, err := tx.Exec(ctx, `UPDATE checkpoints SET journey_id = NULL, journey_order = NULL WHERE journey_id = $1`, id); err != nil {
+			return nil, fmt.Errorf("detach checkpoints: %w", err)
+		}
+	case DeleteHardCheckpoints:
+		if result.MediaKeys, err = r.deleteJourneyCheckpointsTx(ctx, tx, id, userID); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("%w: invalid delete mode", ErrInvalidInput)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE users SET journey_count = GREATEST(journey_count - 1, 0), updated_at = NOW() WHERE id = $1`,
 		userID); err != nil {
-		return fmt.Errorf("decrement journey_count: %w", err)
+		return nil, fmt.Errorf("decrement journey_count: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit delete: %w", err)
+		return nil, fmt.Errorf("commit delete: %w", err)
 	}
-	return nil
+	return result, nil
+}
+
+type deletedCheckpoint struct {
+	id      string
+	placeID *string
+	xpAward int
+}
+
+func (r *Repository) deleteJourneyCheckpointsTx(ctx context.Context, tx pgx.Tx, journeyID, userID string) ([]string, error) {
+	if r.xp == nil {
+		return nil, fmt.Errorf("journey checkpoint delete requires gamification repository")
+	}
+
+	keys, err := collectJourneyMediaKeysTx(ctx, tx, journeyID, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.Query(ctx,
+		`DELETE FROM checkpoints
+		  WHERE journey_id = $1 AND user_id = $2 AND deleted_at IS NULL
+		  RETURNING id, place_id, xp_awarded`,
+		journeyID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("delete journey checkpoints: %w", err)
+	}
+	defer rows.Close()
+
+	var deleted []deletedCheckpoint
+	placeCounts := make(map[string]int)
+	for rows.Next() {
+		var cp deletedCheckpoint
+		if err := rows.Scan(&cp.id, &cp.placeID, &cp.xpAward); err != nil {
+			return nil, fmt.Errorf("scan deleted checkpoint: %w", err)
+		}
+		deleted = append(deleted, cp)
+		if cp.placeID != nil {
+			placeCounts[*cp.placeID]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate deleted checkpoints: %w", err)
+	}
+
+	if len(deleted) > 0 {
+		checkpointIDs := make([]string, 0, len(deleted))
+		xpAwards := make([]int, 0, len(deleted))
+		for _, cp := range deleted {
+			checkpointIDs = append(checkpointIDs, cp.id)
+			xpAwards = append(xpAwards, cp.xpAward)
+		}
+		if err := r.xp.ReverseCheckinDeletesTx(ctx, tx, userID, checkpointIDs, xpAwards); err != nil {
+			return nil, fmt.Errorf("reverse checkpoint xp: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE users SET checkpoint_count = GREATEST(checkpoint_count - $2, 0), updated_at = NOW()
+			 WHERE id = $1`,
+			userID, len(deleted)); err != nil {
+			return nil, fmt.Errorf("drop checkpoint_count: %w", err)
+		}
+	}
+
+	if len(placeCounts) > 0 {
+		placeIDs := make([]string, 0, len(placeCounts))
+		counts := make([]int, 0, len(placeCounts))
+		for placeID, count := range placeCounts {
+			placeIDs = append(placeIDs, placeID)
+			counts = append(counts, count)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE places p
+			    SET checkin_count = GREATEST(p.checkin_count - pc.count, 0),
+			        updated_at = NOW()
+			   FROM (
+			     SELECT place_id::uuid, count
+			       FROM unnest($1::text[], $2::int[]) AS pc(place_id, count)
+			   ) pc
+			  WHERE p.id = pc.place_id`,
+			placeIDs, counts); err != nil {
+			return nil, fmt.Errorf("drop place checkin_count: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM places p
+			  WHERE p.id IN (SELECT place_id::uuid FROM unnest($1::text[]) AS place_ids(place_id))
+			    AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.place_id = p.id)`,
+			placeIDs); err != nil {
+			return nil, fmt.Errorf("delete orphaned places: %w", err)
+		}
+	}
+
+	return keys, nil
+}
+
+func collectJourneyMediaKeysTx(ctx context.Context, tx pgx.Tx, journeyID, userID string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT ci.object_key, ci.thumbnail_key
+		   FROM checkpoint_images ci
+		   JOIN checkpoints c ON c.id = ci.checkpoint_id
+		  WHERE c.journey_id = $1 AND c.user_id = $2 AND c.deleted_at IS NULL`,
+		journeyID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list journey media keys: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	var keys []string
+	add := func(key string) {
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	for rows.Next() {
+		var objectKey string
+		var thumbnailKey *string
+		if err := rows.Scan(&objectKey, &thumbnailKey); err != nil {
+			return nil, fmt.Errorf("scan journey media key: %w", err)
+		}
+		add(objectKey)
+		if thumbnailKey != nil {
+			add(*thumbnailKey)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate journey media keys: %w", err)
+	}
+	return keys, nil
 }
 
 // BelongsToUser reports whether the journey exists and is owned by userID — used

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeRepo is a minimal in-memory stand-in for the repository interface.
@@ -15,6 +16,11 @@ type fakeRepo struct {
 	createResult *CreateResult
 	createErr    error
 	checkpoint   *Checkpoint
+	lastUpdate   *UpdateParams
+	updateResult *Checkpoint
+	updateErr    error
+	listResult   []*Checkpoint
+	listCursor   *CheckpointCursor
 	addedKeys    []ImageKeys
 	deleteKeys   []string
 	deleteErr    error
@@ -36,8 +42,24 @@ func (f *fakeRepo) GetByID(context.Context, string) (*Checkpoint, error) {
 	}
 	return nil, ErrNotFound
 }
-func (f *fakeRepo) GetDetail(context.Context, string) (*Detail, error)             { return nil, ErrNotFound }
-func (f *fakeRepo) ListByUser(context.Context, string, string, int) ([]*Checkpoint, error) { return nil, nil }
+func (f *fakeRepo) GetDetail(context.Context, string) (*Detail, error) { return nil, ErrNotFound }
+func (f *fakeRepo) Update(_ context.Context, _, _ string, p UpdateParams) (*Checkpoint, error) {
+	f.lastUpdate = &p
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	if f.updateResult != nil {
+		return f.updateResult, nil
+	}
+	return &Checkpoint{ID: "cp1", Name: p.Name, Note: p.Note, Rating: p.Rating}, nil
+}
+func (f *fakeRepo) ListByUser(context.Context, string, string, int) ([]*Checkpoint, error) {
+	return f.listResult, nil
+}
+func (f *fakeRepo) ListByUserPage(_ context.Context, _ string, _ string, _ int, cursor *CheckpointCursor) ([]*Checkpoint, error) {
+	f.listCursor = cursor
+	return f.listResult, nil
+}
 func (f *fakeRepo) ListUnassignedByUser(context.Context, string, int, *CheckpointCursor) ([]*Checkpoint, error) {
 	return nil, nil
 }
@@ -101,6 +123,85 @@ func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	}
 	if res.XPAwarded != checkinXP {
 		t.Errorf("result XPAwarded = %d, want %d", res.XPAwarded, checkinXP)
+	}
+}
+
+func TestServiceUpdate_ValidatesAndNormalizesContent(t *testing.T) {
+	repo := &fakeRepo{}
+	note := "  Quán yên tĩnh  "
+	rating := int16(5)
+
+	cp, err := NewService(repo, nil, nil).Update(context.Background(), "cp1", "u1", UpdateInput{
+		Name:   "  Cà phê chiều  ",
+		Note:   &note,
+		Rating: &rating,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cp.Name != "Cà phê chiều" {
+		t.Fatalf("updated name = %q", cp.Name)
+	}
+	if repo.lastUpdate == nil {
+		t.Fatal("repo.Update was not called")
+	}
+	if repo.lastUpdate.Name != "Cà phê chiều" {
+		t.Fatalf("Name = %q, want trimmed", repo.lastUpdate.Name)
+	}
+	if repo.lastUpdate.Note == nil || *repo.lastUpdate.Note != "Quán yên tĩnh" {
+		t.Fatalf("Note = %v, want trimmed note", repo.lastUpdate.Note)
+	}
+	if repo.lastUpdate.Rating == nil || *repo.lastUpdate.Rating != 5 {
+		t.Fatalf("Rating = %v, want 5", repo.lastUpdate.Rating)
+	}
+}
+
+func TestServiceUpdate_Validation(t *testing.T) {
+	tests := []struct {
+		name string
+		in   UpdateInput
+	}{
+		{"empty name", UpdateInput{Name: "  "}},
+		{"rating too low", UpdateInput{Name: "x", Rating: ratingPtr(0)}},
+		{"rating too high", UpdateInput{Name: "x", Rating: ratingPtr(6)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			_, err := NewService(repo, nil, nil).Update(context.Background(), "cp1", "u1", tt.in)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput, got %v", err)
+			}
+			if repo.lastUpdate != nil {
+				t.Fatal("repo.Update should not be called on invalid input")
+			}
+		})
+	}
+}
+
+func TestServiceListMine_PaginatesWithCursor(t *testing.T) {
+	t1 := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	t2 := t1.Add(-time.Minute)
+	t3 := t2.Add(-time.Minute)
+	cursor := &CheckpointCursor{CreatedAt: t1.Format(time.RFC3339Nano), ID: "cp0"}
+	repo := &fakeRepo{listResult: []*Checkpoint{
+		{ID: "cp1", CreatedAt: t1},
+		{ID: "cp2", CreatedAt: t2},
+		{ID: "cp3", CreatedAt: t3},
+	}}
+
+	page, err := NewService(repo, nil, nil).ListMine(context.Background(), "u1", "", 2, cursor)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.listCursor != cursor {
+		t.Fatal("cursor was not passed to repo")
+	}
+	if len(page.Checkpoints) != 2 {
+		t.Fatalf("checkpoints = %d, want 2", len(page.Checkpoints))
+	}
+	if page.NextCursor == nil || *page.NextCursor != t2.Format(time.RFC3339Nano)+"|cp2" {
+		t.Fatalf("next cursor = %v, want cp2 cursor", page.NextCursor)
 	}
 }
 

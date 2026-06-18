@@ -99,6 +99,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(auth).Post("/{id}/images", h.UploadImages)
 		r.With(auth).Post("/{id}/upload-urls", h.GetUploadURLs)
 		r.With(auth).Post("/{id}/images/link", h.LinkImages)
+		r.With(auth).Patch("/{id}", h.Update)
 		r.With(auth).Delete("/{id}", h.Delete)
 	})
 }
@@ -120,6 +121,12 @@ type createRequest struct {
 		ThumbnailKey *string `json:"thumbnail_key"`
 		Type         string  `json:"type"`
 	} `json:"images"`
+}
+
+type updateRequest struct {
+	Name   string  `json:"name"`
+	Note   *string `json:"note"`
+	Rating *int16  `json:"rating"`
 }
 
 // Create handles a check-in. The request body must include pre-uploaded image keys.
@@ -234,40 +241,54 @@ func (h *Handler) PrepareSlots(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListMine(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	cursor, ok := h.decodeCursor(w, r)
+	if !ok {
+		return
+	}
 	if r.URL.Query().Get("journey") == "none" {
-		var cursor *CheckpointCursor
-		if raw := r.URL.Query().Get("cursor"); raw != "" {
-			decoded, err := base64.RawURLEncoding.DecodeString(raw)
-			if err != nil {
-				respond.Error(w, http.StatusBadRequest, "invalid cursor")
-				return
-			}
-			parts := strings.SplitN(string(decoded), "|", 2)
-			if len(parts) != 2 {
-				respond.Error(w, http.StatusBadRequest, "invalid cursor")
-				return
-			}
-			cursor = &CheckpointCursor{CreatedAt: parts[0], ID: parts[1]}
-		}
 		page, err := h.svc.ListMineUnassigned(r.Context(), p.UserID, limit, cursor)
 		if err != nil {
 			respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
 			return
 		}
-		if page.NextCursor != nil {
-			encoded := base64.RawURLEncoding.EncodeToString([]byte(*page.NextCursor))
-			page.NextCursor = &encoded
-		}
+		h.encodeNextCursor(page)
 		respond.JSON(w, http.StatusOK, page)
 		return
 	}
 	provinceCode := r.URL.Query().Get("province_code")
-	list, err := h.svc.ListMine(r.Context(), p.UserID, provinceCode, limit)
+	page, err := h.svc.ListMine(r.Context(), p.UserID, provinceCode, limit, cursor)
 	if err != nil {
 		respond.Error(w, http.StatusInternalServerError, "could not list checkpoints")
 		return
 	}
-	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
+	h.encodeNextCursor(page)
+	respond.JSON(w, http.StatusOK, page)
+}
+
+func (h *Handler) decodeCursor(w http.ResponseWriter, r *http.Request) (*CheckpointCursor, bool) {
+	raw := r.URL.Query().Get("cursor")
+	if raw == "" {
+		return nil, true
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid cursor")
+		return nil, false
+	}
+	parts := strings.SplitN(string(decoded), "|", 2)
+	if len(parts) != 2 {
+		respond.Error(w, http.StatusBadRequest, "invalid cursor")
+		return nil, false
+	}
+	return &CheckpointCursor{CreatedAt: parts[0], ID: parts[1]}, true
+}
+
+func (h *Handler) encodeNextCursor(page *CheckpointPage) {
+	if page.NextCursor == nil {
+		return
+	}
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(*page.NextCursor))
+	page.NextCursor = &encoded
 }
 
 // ListByUser returns a user's checkpoints by id (?user_id=...). Public — used
@@ -354,6 +375,33 @@ func (h *Handler) View(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, map[string]any{"view_count": count})
+}
+
+// Update edits the caller's checkpoint content only.
+func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	var req updateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	cp, err := h.svc.Update(r.Context(), chi.URLParam(r, "id"), p.UserID, UpdateInput{
+		Name:   req.Name,
+		Note:   req.Note,
+		Rating: req.Rating,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			respond.Error(w, http.StatusNotFound, "checkpoint not found")
+		case errors.Is(err, ErrInvalidInput):
+			respond.Error(w, http.StatusBadRequest, err.Error())
+		default:
+			respond.Error(w, http.StatusInternalServerError, "could not update checkpoint")
+		}
+		return
+	}
+	respond.JSON(w, http.StatusOK, cp)
 }
 
 // UploadImages attaches multipart "images" files to a checkpoint the caller owns.

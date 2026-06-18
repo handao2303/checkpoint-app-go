@@ -57,6 +57,13 @@ type CreateResult struct {
 	Images     []Image              `json:"images,omitempty"`     // all images linked at creation time
 }
 
+// UpdateParams are the owner-scoped editable checkpoint fields.
+type UpdateParams struct {
+	Name   string
+	Note   *string
+	Rating *int16
+}
+
 // Image is a media item attached to a checkpoint. Type is "image" or "video".
 type Image struct {
 	ID           string  `json:"id"`

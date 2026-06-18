@@ -18,7 +18,7 @@ type repository interface {
 	GetDetail(ctx context.Context, id string) (*Detail, error)
 	Update(ctx context.Context, id, userID string, title, description *string) (*Journey, error)
 	SetActive(ctx context.Context, id, userID string, active bool) (*Journey, error)
-	Delete(ctx context.Context, id, userID string) error
+	Delete(ctx context.Context, id, userID string, mode DeleteMode) (*DeleteResult, error)
 	AssignCheckpoint(ctx context.Context, journeyID, checkpointID, userID string) error
 	AssignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error
 }
@@ -81,9 +81,16 @@ func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput)
 	return j, nil
 }
 
-// Delete removes an owned journey.
-func (s *Service) Delete(ctx context.Context, id, userID string) error {
-	return s.repo.Delete(ctx, id, userID)
+// Delete removes an owned journey and applies the selected checkpoint behavior.
+func (s *Service) Delete(ctx context.Context, id, userID string, mode DeleteMode) (*DeleteResult, error) {
+	switch mode {
+	case "", DeleteDetachCheckpoints:
+		return s.repo.Delete(ctx, id, userID, DeleteDetachCheckpoints)
+	case DeleteHardCheckpoints:
+		return s.repo.Delete(ctx, id, userID, DeleteHardCheckpoints)
+	default:
+		return nil, fmt.Errorf("%w: invalid checkpoints mode", ErrInvalidInput)
+	}
 }
 
 // AssignCheckpoint attaches a checkpoint to a journey (both owned by the caller).

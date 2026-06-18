@@ -310,23 +310,55 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Checkpoint, error
 	return c, nil
 }
 
+// Update edits content fields for a checkpoint owned by userID.
+func (r *Repository) Update(ctx context.Context, id, userID string, p UpdateParams) (*Checkpoint, error) {
+	c, err := scanCheckpoint(r.db.QueryRow(ctx,
+		`UPDATE checkpoints
+		    SET name = $3, note = $4, rating = $5, updated_at = NOW()
+		  WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
+		  RETURNING `+cpColumns,
+		id, userID, p.Name, p.Note, p.Rating))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("update checkpoint: %w", err)
+	}
+	return c, nil
+}
+
 // ListByUser returns a user's checkpoints (newest first) with cover image URLs.
 func (r *Repository) ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error) {
+	return r.ListByUserPage(ctx, userID, provinceCode, limit, nil)
+}
+
+// ListByUserPage returns a user's checkpoints using keyset pagination.
+func (r *Repository) ListByUserPage(ctx context.Context, userID string, provinceCode string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error) {
 	if provinceCode != "" {
-		rows, err := r.db.Query(ctx,
-			`SELECT `+cpListColumns+` FROM checkpoints
-			 WHERE user_id = $1 AND deleted_at IS NULL AND province_code = $2
-			 ORDER BY created_at DESC LIMIT $3`, userID, provinceCode, limit)
+		query := `SELECT ` + cpListColumns + ` FROM checkpoints
+			 WHERE user_id = $1 AND deleted_at IS NULL AND province_code = $2`
+		args := []any{userID, provinceCode, limit}
+		if cursor != nil {
+			query += ` AND (created_at, id) < ($4::timestamptz, $5::uuid)`
+			args = append(args, cursor.CreatedAt, cursor.ID)
+		}
+		query += ` ORDER BY created_at DESC, id DESC LIMIT $3`
+		rows, err := r.db.Query(ctx, query, args...)
 		if err != nil {
 			return nil, fmt.Errorf("list checkpoints by province: %w", err)
 		}
 		return r.collectCheckpoints(rows)
 	}
 
-	rows, err := r.db.Query(ctx,
-		`SELECT `+cpListColumns+` FROM checkpoints
-		 WHERE user_id = $1 AND deleted_at IS NULL
-		 ORDER BY created_at DESC LIMIT $2`, userID, limit)
+	query := `SELECT ` + cpListColumns + ` FROM checkpoints
+		 WHERE user_id = $1 AND deleted_at IS NULL`
+	args := []any{userID, limit}
+	if cursor != nil {
+		query += ` AND (created_at, id) < ($3::timestamptz, $4::uuid)`
+		args = append(args, cursor.CreatedAt, cursor.ID)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT $2`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoints: %w", err)
 	}

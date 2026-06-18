@@ -68,6 +68,42 @@ func (r *Repository) AwardXPTx(
 	return totalXP, level, nil
 }
 
+// ReverseCheckinDeletesTx reverses XP for a batch of deleted check-ins in one
+// user update and one bulk xp_events insert. checkpointIDs and xpAwards must be
+// the same length and positionally aligned.
+func (r *Repository) ReverseCheckinDeletesTx(
+	ctx context.Context, tx pgx.Tx, userID string, checkpointIDs []string, xpAwards []int,
+) error {
+	if len(checkpointIDs) == 0 {
+		return nil
+	}
+	if len(checkpointIDs) != len(xpAwards) {
+		return fmt.Errorf("checkpointIDs/xpAwards length mismatch")
+	}
+	total := 0
+	for _, xp := range xpAwards {
+		total += xp
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE users
+		 SET total_xp   = GREATEST(total_xp - $2, 0),
+		     level      = LEAST(FLOOR(SQRT(GREATEST(total_xp - $2, 0) / 100.0))::int + 1, 50),
+		     updated_at = NOW()
+		 WHERE id = $1`,
+		userID, total); err != nil {
+		return fmt.Errorf("update xp: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO xp_events (user_id, type, xp, ref_id)
+		   SELECT $1, 'checkin_deleted', -d.xp, d.ref_id::uuid
+		     FROM unnest($2::text[], $3::int[]) AS d(ref_id, xp)`,
+		userID, checkpointIDs, xpAwards); err != nil {
+		return fmt.Errorf("insert xp_events: %w", err)
+	}
+	r.invalidateLeaderboard(ctx)
+	return nil
+}
+
 func (r *Repository) invalidateLeaderboard(ctx context.Context) {
 	if r.redis == nil {
 		return

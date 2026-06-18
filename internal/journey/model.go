@@ -29,6 +29,20 @@ type UpdateInput struct {
 	IsActive    *bool   `json:"is_active"`
 }
 
+// DeleteMode controls what happens to checkpoints attached to a deleted journey.
+type DeleteMode string
+
+const (
+	DeleteDetachCheckpoints DeleteMode = "detach"
+	DeleteHardCheckpoints   DeleteMode = "delete"
+)
+
+// DeleteResult captures side effects that should happen after the DB
+// transaction commits.
+type DeleteResult struct {
+	MediaKeys []string
+}
+
 // Stop is a checkpoint that belongs to a journey (timeline + map point).
 type Stop struct {
 	ID           string    `json:"id"`

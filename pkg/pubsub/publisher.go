@@ -23,6 +23,24 @@ type MediaJob struct {
 }
 
 const (
+	JobTypeProcessCheckpoint = "process_checkpoint"
+	JobTypeMediaCleanup      = "media_cleanup"
+)
+
+// JobEnvelope is the typed payload used by newer worker jobs. Workers also
+// accept legacy MediaJob payloads for checkpoint processing.
+type JobEnvelope struct {
+	Type              string           `json:"type"`
+	ProcessCheckpoint *MediaJob        `json:"process_checkpoint,omitempty"`
+	MediaCleanup      *MediaCleanupJob `json:"media_cleanup,omitempty"`
+}
+
+// MediaCleanupJob deletes orphaned object-storage keys after DB rows are gone.
+type MediaCleanupJob struct {
+	Keys []string `json:"keys"`
+}
+
+const (
 	metadataTokenURL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 	pubsubPublishURL = "https://pubsub.googleapis.com/v1/projects/%s/topics/%s:publish"
 )
@@ -64,6 +82,40 @@ func (p *Publisher) PublishMedia(ctx context.Context, checkpointID, userID strin
 	if err != nil {
 		return fmt.Errorf("marshal media job: %w", err)
 	}
+	return p.publish(ctx, payload)
+}
+
+// PublishMediaCleanup publishes a best-effort cleanup job for storage objects.
+func (p *Publisher) PublishMediaCleanup(ctx context.Context, keys []string) error {
+	if p == nil {
+		return ErrDisabled
+	}
+	clean := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		clean = append(clean, key)
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	payload, err := json.Marshal(JobEnvelope{
+		Type:         JobTypeMediaCleanup,
+		MediaCleanup: &MediaCleanupJob{Keys: clean},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal media cleanup job: %w", err)
+	}
+	return p.publish(ctx, payload)
+}
+
+func (p *Publisher) publish(ctx context.Context, payload []byte) error {
 	token, err := p.accessToken(ctx)
 	if err != nil {
 		return fmt.Errorf("get access token: %w", err)
