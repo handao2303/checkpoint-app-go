@@ -81,24 +81,27 @@ func (r *Repository) invalidateLeaderboard(ctx context.Context) {
 // for legacy rows.
 func (r *Repository) Passport(ctx context.Context, userID string) (*Passport, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT g.province_key, g.display_name, g.province_code, g.checkin_count, g.first_at, g.last_at,
-                        (SELECT c2.thumbnail_key
-                           FROM checkpoints c2
-                          WHERE c2.user_id = $1 AND c2.deleted_at IS NULL
-                            AND COALESCE(c2.province_code, c2.province) = g.province_key 
-                            AND c2.thumbnail_key IS NOT NULL
-                          ORDER BY c2.created_at DESC LIMIT 1) AS cover_key
-                   FROM (
-                     SELECT COALESCE(province_code, province) AS province_key,
-                            MAX(province) AS display_name,
-                            MAX(province_code) AS province_code,
-                            COUNT(*) AS checkin_count,
-                            MIN(created_at) AS first_at, MAX(created_at) AS last_at
-                       FROM checkpoints
-                      WHERE user_id = $1 AND deleted_at IS NULL AND (province IS NOT NULL OR province_code IS NOT NULL)
-                      GROUP BY province_key
-                   ) g
-                  ORDER BY g.last_at DESC`,
+		`SELECT g.province_key, 
+                COALESCE(g.display_name, '') AS display_name, 
+                COALESCE(g.province_code, '') AS province_code, 
+                g.checkin_count, g.first_at, g.last_at,
+                (SELECT c2.thumbnail_key
+                   FROM checkpoints c2
+                  WHERE c2.user_id = $1 AND c2.deleted_at IS NULL
+                    AND COALESCE(c2.province_code, c2.province) = g.province_key 
+                    AND c2.thumbnail_key IS NOT NULL
+                  ORDER BY c2.created_at DESC LIMIT 1) AS cover_key
+           FROM (
+             SELECT COALESCE(province_code, province) AS province_key,
+                    MAX(province) AS display_name,
+                    MAX(province_code) AS province_code,
+                    COUNT(*) AS checkin_count,
+                    MIN(created_at) AS first_at, MAX(created_at) AS last_at
+               FROM checkpoints
+              WHERE user_id = $1 AND deleted_at IS NULL AND (province IS NOT NULL OR province_code IS NOT NULL)
+              GROUP BY COALESCE(province_code, province)
+           ) g
+          ORDER BY g.last_at DESC`,
 		userID)
 	if err != nil {
 		return nil, fmt.Errorf("query passport: %w", err)
@@ -282,4 +285,3 @@ func (r *Repository) UserIDByUsername(ctx context.Context, username string) (str
 	}
 	return id, nil
 }
-

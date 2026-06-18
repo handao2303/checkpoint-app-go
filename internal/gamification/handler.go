@@ -1,6 +1,7 @@
 package gamification
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -68,6 +69,7 @@ func (h *Handler) UserPassport(w http.ResponseWriter, r *http.Request) {
 	username := chi.URLParam(r, "username")
 	passport, err := h.svc.PassportByUsername(r.Context(), username)
 	if err != nil {
+		fmt.Println("error fetching passport for username", username, ":", err)
 		respond.Error(w, http.StatusNotFound, "user not found")
 		return
 	}
