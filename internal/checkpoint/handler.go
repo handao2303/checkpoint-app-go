@@ -105,17 +105,18 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 }
 
 type createRequest struct {
-	Name         string  `json:"name"`
-	Category     string  `json:"category"`
-	Note         *string `json:"note"`
-	Rating       *int16  `json:"rating"`
-	Lat          float64 `json:"lat"`
-	Lng          float64 `json:"lng"`
-	Address      *string `json:"address"`
-	Province     *string `json:"province"`
-	ProvinceCode *string `json:"province_code"`
-	PlaceID      *string `json:"place_id"`
-	JourneyID    *string `json:"journey_id"`
+	Name         string     `json:"name"`
+	Category     string     `json:"category"`
+	Note         *string    `json:"note"`
+	Rating       *int16     `json:"rating"`
+	Lat          float64    `json:"lat"`
+	Lng          float64    `json:"lng"`
+	Address      *string    `json:"address"`
+	Province     *string    `json:"province"`
+	ProvinceCode *string    `json:"province_code"`
+	PlaceID      *string    `json:"place_id"`
+	JourneyID    *string    `json:"journey_id"`
+	TakenAt      *time.Time `json:"taken_at"`
 	Images       []struct {
 		ObjectKey    string  `json:"object_key"`
 		ThumbnailKey *string `json:"thumbnail_key"`
@@ -157,6 +158,7 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 		ProvinceCode: req.ProvinceCode,
 		PlaceID:      req.PlaceID,
 		JourneyID:    req.JourneyID,
+		TakenAt:      req.TakenAt,
 		Images:       images,
 	})
 	if err != nil {

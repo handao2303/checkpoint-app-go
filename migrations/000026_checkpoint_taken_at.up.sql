@@ -1,0 +1,1 @@
+ALTER TABLE checkpoints ADD COLUMN taken_at TIMESTAMPTZ;

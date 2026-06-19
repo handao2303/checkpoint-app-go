@@ -8,24 +8,25 @@ import (
 
 // Checkpoint is a check-in at a GPS location.
 type Checkpoint struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"user_id"`
-	Name         string    `json:"name"`
-	Category     string    `json:"category"`
-	Note         *string   `json:"note,omitempty"`
-	Rating       *int16    `json:"rating,omitempty"`
-	Lat          float64   `json:"lat"`
-	Lng          float64   `json:"lng"`
-	Address      *string   `json:"address,omitempty"`
-	PlaceID      *string   `json:"place_id,omitempty"`
-	JourneyID    *string   `json:"journey_id,omitempty"`
-	ImageURL     *string   `json:"image_url,omitempty"` // first photo (populated in list)
-	ThumbnailURL *string   `json:"thumbnail_url,omitempty"`
-	MediaType    *string   `json:"media_type,omitempty"` // type of the cover media in list responses
-	XPAwarded    int       `json:"xp_awarded"`
-	ViewCount    int       `json:"view_count"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID           string     `json:"id"`
+	UserID       string     `json:"user_id"`
+	Name         string     `json:"name"`
+	Category     string     `json:"category"`
+	Note         *string    `json:"note,omitempty"`
+	Rating       *int16     `json:"rating,omitempty"`
+	Lat          float64    `json:"lat"`
+	Lng          float64    `json:"lng"`
+	Address      *string    `json:"address,omitempty"`
+	PlaceID      *string    `json:"place_id,omitempty"`
+	JourneyID    *string    `json:"journey_id,omitempty"`
+	ImageURL     *string    `json:"image_url,omitempty"` // first photo (populated in list)
+	ThumbnailURL *string    `json:"thumbnail_url,omitempty"`
+	MediaType    *string    `json:"media_type,omitempty"` // type of the cover media in list responses
+	XPAwarded    int        `json:"xp_awarded"`
+	ViewCount    int        `json:"view_count"`
+	TakenAt      *time.Time `json:"taken_at,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
 }
 
 // CreateParams are the validated inputs for creating a checkpoint.
@@ -38,10 +39,11 @@ type CreateParams struct {
 	Lat          float64
 	Lng          float64
 	Address      *string
-	Province     *string // resolved province name for the passport (best-effort)
-	ProvinceCode *string // ISO code (e.g. "VN-SG") for optimized grouping
-	PlaceID      *string // optional: check-in to a specific place (else resolved)
-	JourneyID    *string // optional: attach to a journey (else active journey)
+	Province     *string    // resolved province name for the passport (best-effort)
+	ProvinceCode *string    // ISO code (e.g. "VN-SG") for optimized grouping
+	PlaceID      *string    // optional: check-in to a specific place (else resolved)
+	JourneyID    *string    // optional: attach to a journey (else active journey)
+	TakenAt      *time.Time // optional source-photo capture timestamp
 	XPReward     int
 	Images       []ImageKeys // pre-uploaded media to link in the same tx (required ≥1)
 }

@@ -247,6 +247,23 @@ func TestServiceCreate_StoresClientProvinceCode(t *testing.T) {
 	}
 }
 
+func TestServiceCreate_StoresTakenAt(t *testing.T) {
+	repo := &fakeRepo{}
+	takenAt := time.Date(2026, 6, 18, 9, 30, 0, 0, time.UTC)
+
+	if _, err := NewService(repo, nil, nil).Create(
+		context.Background(),
+		"user1",
+		Input{Name: "Cà phê", Lat: 10.8, Lng: 106.6, TakenAt: &takenAt, Images: testImages},
+	); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if repo.lastCreate.TakenAt == nil || !repo.lastCreate.TakenAt.Equal(takenAt) {
+		t.Fatalf("TakenAt = %v, want %v", repo.lastCreate.TakenAt, takenAt)
+	}
+}
+
 func TestServiceCreate_HandlesBlankAddress(t *testing.T) {
 	repo := &fakeRepo{}
 	blank := "   "

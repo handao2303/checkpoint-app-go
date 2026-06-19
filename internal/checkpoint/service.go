@@ -92,6 +92,7 @@ type Input struct {
 	ProvinceCode *string
 	PlaceID      *string
 	JourneyID    *string
+	TakenAt      *time.Time
 	// Images are media keys already uploaded directly to R2. Required (≥1).
 	Images []ImageKeys
 }
@@ -185,6 +186,7 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		ProvinceCode: provinceCode,
 		PlaceID:      in.PlaceID,
 		JourneyID:    journeyID,
+		TakenAt:      in.TakenAt,
 		XPReward:     checkinXP,
 		Images:       in.Images,
 	})

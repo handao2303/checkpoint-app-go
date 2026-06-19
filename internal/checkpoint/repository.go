@@ -51,7 +51,7 @@ func NewRepository(db *pgxpool.Pool, mediaBase string, places placeResolver, xp 
 }
 
 const cpColumns = `id, user_id, name, category, note, rating, lat, lng, address,
-	place_id, journey_id, xp_awarded, view_count, created_at, updated_at`
+	place_id, journey_id, xp_awarded, view_count, taken_at, created_at, updated_at`
 
 // cpListColumns extends cpColumns with denormalized cover media fields.
 const cpListColumns = cpColumns + `, image_key, thumbnail_key,
@@ -93,7 +93,7 @@ func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 	var c Checkpoint
 	err := row.Scan(
 		&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-		&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.CreatedAt, &c.UpdatedAt,
+		&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.TakenAt, &c.CreatedAt, &c.UpdatedAt,
 	)
 	return &c, err
 }
@@ -123,10 +123,10 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}
 
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, xp_awarded)
-	         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, taken_at, xp_awarded)
+	         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 	         RETURNING `+cpColumns,
-		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.XPReward))
+		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.TakenAt, p.XPReward))
 	if err != nil {
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}
@@ -421,7 +421,7 @@ func (r *Repository) collectCheckpoints(rows pgx.Rows) ([]*Checkpoint, error) {
 		var imageKey, thumbnailKey, mediaType *string
 		if err := rows.Scan(
 			&c.ID, &c.UserID, &c.Name, &c.Category, &c.Note, &c.Rating, &c.Lat, &c.Lng,
-			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.CreatedAt, &c.UpdatedAt,
+			&c.Address, &c.PlaceID, &c.JourneyID, &c.XPAwarded, &c.ViewCount, &c.TakenAt, &c.CreatedAt, &c.UpdatedAt,
 			&imageKey, &thumbnailKey, &mediaType,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint: %w", err)
@@ -449,7 +449,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 
 	rows, err := r.db.Query(ctx,
 		`SELECT c.id, c.user_id, c.name, c.category, c.note, c.rating, c.lat, c.lng, c.address,
-		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.created_at, c.updated_at,
+		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.taken_at, c.created_at, c.updated_at,
 		        c.image_key, c.thumbnail_key,
 		        u.username, u.display_name, u.avatar_key,
 		        ci.id, ci.object_key, ci.thumbnail_key, ci.media_type, ci.sort_order
@@ -473,7 +473,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		var sortOrder *int
 		if err := rows.Scan(
 			&cp.ID, &cp.UserID, &cp.Name, &cp.Category, &cp.Note, &cp.Rating, &cp.Lat, &cp.Lng,
-			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.CreatedAt, &cp.UpdatedAt,
+			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.TakenAt, &cp.CreatedAt, &cp.UpdatedAt,
 			&cpImageKey, &cpThumbnailKey,
 			&author.Username, &author.DisplayName, &author.AvatarURL,
 			&imageID, &objectKey, &thumbnailKey, &mediaType, &sortOrder,
