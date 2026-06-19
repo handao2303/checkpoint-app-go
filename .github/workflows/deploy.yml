@@ -139,6 +139,7 @@ jobs:
       # Async media pipeline. PUBSUB_TOPIC unset → API processes media inline.
       # The worker is deployed by the separate `deploy-worker` job (in parallel).
       PUBSUB_TOPIC: ${{ vars.PUBSUB_TOPIC }}
+      SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
 
     outputs:
       service_url: ${{ steps.service.outputs.url }}
@@ -212,6 +213,7 @@ jobs:
             --arg GOOGLE_PHOTOS_CLIENT_SECRET "$GOOGLE_PHOTOS_CLIENT_SECRET" \
             --arg GCP_PROJECT_ID "$GCP_PROJECT_ID" \
             --arg PUBSUB_TOPIC "$PUBSUB_TOPIC" \
+            --arg SUPABASE_ANON_KEY "$SUPABASE_ANON_KEY" \
             '{
               ENV: $APP_ENV,
               CORS_ALLOWED_ORIGINS: $CORS_ALLOWED_ORIGINS,
@@ -237,7 +239,8 @@ jobs:
               GOOGLE_PHOTOS_CLIENT_ID: $GOOGLE_PHOTOS_CLIENT_ID,
               GOOGLE_PHOTOS_CLIENT_SECRET: $GOOGLE_PHOTOS_CLIENT_SECRET,
               GCP_PROJECT_ID: $GCP_PROJECT_ID,
-              PUBSUB_TOPIC: $PUBSUB_TOPIC
+              PUBSUB_TOPIC: $PUBSUB_TOPIC,
+              SUPABASE_ANON_KEY: $SUPABASE_ANON_KEY
             }' > "$runtime_env"
 
           if ! jq -e 'all(.[]; type == "string")' "$runtime_env" >/dev/null; then

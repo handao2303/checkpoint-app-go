@@ -29,6 +29,7 @@ func NewHandler(svc *Service) *Handler {
 func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler) {
 	r.Route("/auth", func(r chi.Router) {
 		r.Post("/exchange", h.Exchange)
+		r.Post("/login", h.Login)
 		r.Post("/refresh", h.Refresh)
 		r.Post("/logout", h.Logout)
 	})
@@ -68,6 +69,29 @@ func (h *Handler) Exchange(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond.Error(w, http.StatusInternalServerError, "could not exchange token")
+		return
+	}
+	respond.JSON(w, http.StatusOK, tokenResponse{pair.AccessToken, pair.RefreshToken, user})
+}
+
+// Login authenticates by username OR email + password (Supabase password grant
+// server-side) and returns our own token pair.
+func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Identifier string `json:"identifier"`
+		Password   string `json:"password"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		respond.Error(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if strings.TrimSpace(req.Identifier) == "" || req.Password == "" {
+		respond.Error(w, http.StatusBadRequest, "identifier and password are required")
+		return
+	}
+	pair, user, err := h.svc.LoginWithPassword(r.Context(), req.Identifier, req.Password)
+	if err != nil {
+		respond.Error(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 	respond.JSON(w, http.StatusOK, tokenResponse{pair.AccessToken, pair.RefreshToken, user})
@@ -117,20 +141,28 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, user)
 }
 
-// UpdateProfile updates display name and/or bio.
+// UpdateProfile updates display name, bio and/or username.
 func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	var req struct {
 		DisplayName *string `json:"display_name"`
 		Bio         *string `json:"bio"`
+		Username    *string `json:"username"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		respond.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	user, err := h.svc.UpdateProfile(r.Context(), p.UserID, req.DisplayName, req.Bio)
+	user, err := h.svc.UpdateProfile(r.Context(), p.UserID, req.DisplayName, req.Bio, req.Username)
 	if err != nil {
-		respond.Error(w, http.StatusInternalServerError, "could not update profile")
+		switch {
+		case errors.Is(err, ErrInvalidUsername):
+			respond.Error(w, http.StatusBadRequest, "username must be 3–20 chars: a–z, 0–9, _")
+		case errors.Is(err, ErrUsernameTaken):
+			respond.Error(w, http.StatusConflict, "username already taken")
+		default:
+			respond.Error(w, http.StatusInternalServerError, "could not update profile")
+		}
 		return
 	}
 	respond.JSON(w, http.StatusOK, user)

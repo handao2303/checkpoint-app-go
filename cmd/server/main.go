@@ -121,6 +121,12 @@ func run() error {
 	tokens := identity.NewTokenManager(cfg.jwtSecret, cfg.accessTTL, cfg.refreshTTL)
 	r2 := storage.NewR2(cfg.r2)
 	identitySvc := identity.NewService(identity.NewRepository(pool, cfg.r2.PublicURL, redisClient), tokens, verifier, r2)
+	if cfg.supabaseAnonKey != "" {
+		identitySvc = identitySvc.WithPasswordLogin(supabase.NewAuthClient(cfg.supabaseURL, cfg.supabaseAnonKey))
+		log.Printf("auth: username/password login enabled")
+	} else {
+		log.Printf("auth: SUPABASE_ANON_KEY unset — username/password login disabled")
+	}
 	identityHandler := identity.NewHandler(identitySvc)
 
 	placeRepo := place.NewRepository(pool, cfg.r2.PublicURL)
@@ -300,34 +306,36 @@ type photosConfig struct {
 }
 
 type config struct {
-	port         string
-	env          string
-	databaseURL  string
-	redisURL     string
-	jwtSecret    string
-	supabaseURL  string
-	corsOrigins  []string
-	accessTTL    time.Duration
-	refreshTTL   time.Duration
-	r2           storage.R2Config
-	rateLimit    appmw.RateLimitConfig
-	placesAPIKey string
-	frontendURL  string
-	drive        driveConfig
-	photos       photosConfig
-	gcpProject   string
-	pubsubTopic  string
+	port            string
+	env             string
+	databaseURL     string
+	redisURL        string
+	jwtSecret       string
+	supabaseURL     string
+	supabaseAnonKey string
+	corsOrigins     []string
+	accessTTL       time.Duration
+	refreshTTL      time.Duration
+	r2              storage.R2Config
+	rateLimit       appmw.RateLimitConfig
+	placesAPIKey    string
+	frontendURL     string
+	drive           driveConfig
+	photos          photosConfig
+	gcpProject      string
+	pubsubTopic     string
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		port:        getEnv("PORT", "8080"),
-		env:         getEnv("ENV", "development"),
-		databaseURL: os.Getenv("DATABASE_URL"),
-		redisURL:    os.Getenv("REDIS_URL"),
-		jwtSecret:   os.Getenv("JWT_SECRET"),
-		supabaseURL: os.Getenv("SUPABASE_URL"),
-		corsOrigins: splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")),
+		port:            getEnv("PORT", "8080"),
+		env:             getEnv("ENV", "development"),
+		databaseURL:     os.Getenv("DATABASE_URL"),
+		redisURL:        os.Getenv("REDIS_URL"),
+		jwtSecret:       os.Getenv("JWT_SECRET"),
+		supabaseURL:     os.Getenv("SUPABASE_URL"),
+		supabaseAnonKey: os.Getenv("SUPABASE_ANON_KEY"),
+		corsOrigins:     splitCSV(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")),
 		r2: storage.R2Config{
 			AccountID: os.Getenv("R2_ACCOUNT_ID"),
 			AccessKey: os.Getenv("R2_ACCESS_KEY_ID"),

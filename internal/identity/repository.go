@@ -141,15 +141,16 @@ func (r *Repository) CreateUser(ctx context.Context, p CreateUserParams) (*User,
 
 // UpdateProfile updates the mutable profile fields. Nil pointers leave the
 // existing value untouched (COALESCE).
-func (r *Repository) UpdateProfile(ctx context.Context, id string, displayName, bio *string) (*User, error) {
+func (r *Repository) UpdateProfile(ctx context.Context, id string, displayName, bio, username *string) (*User, error) {
 	row := r.db.QueryRow(ctx,
 		`UPDATE users SET
 		   display_name = COALESCE($2, display_name),
 		   bio          = COALESCE($3, bio),
+		   username     = COALESCE($4, username),
 		   updated_at   = NOW()
 		 WHERE id = $1 AND deleted_at IS NULL
 		 RETURNING `+userColumns,
-		id, displayName, bio)
+		id, displayName, bio, username)
 	return r.getUser(row, "update profile")
 }
 

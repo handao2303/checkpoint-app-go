@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +18,20 @@ var (
 	ErrUnauthorized    = errors.New("unauthorized")
 	ErrUnsupportedFile = errors.New("unsupported file type")
 	ErrSelfFollow      = errors.New("cannot follow yourself")
+	ErrInvalidUsername = errors.New("invalid username")
+	ErrUsernameTaken   = errors.New("username taken")
 )
+
+// usernameRe matches an acceptable user-chosen handle: lowercase letters,
+// digits and underscore, 3–20 chars.
+var usernameRe = regexp.MustCompile(`^[a-z0-9_]{3,20}$`)
+
+// reservedUsernames are handles users may not claim (route names / impersonation).
+var reservedUsernames = map[string]bool{
+	"admin": true, "api": true, "me": true, "null": true, "undefined": true,
+	"support": true, "checkpoint": true, "auth": true, "users": true,
+	"user": true, "following": true, "privacy": true, "terms": true,
+}
 
 // repository is the data layer the service depends on (defined here, on the
 // consumer side, for easy mocking in tests).
@@ -26,7 +41,7 @@ type repository interface {
 	GetBySupabaseID(ctx context.Context, supabaseID string) (*User, error)
 	GetByUsername(ctx context.Context, username string) (*User, error)
 	CreateUser(ctx context.Context, p CreateUserParams) (*User, error)
-	UpdateProfile(ctx context.Context, id string, displayName, bio *string) (*User, error)
+	UpdateProfile(ctx context.Context, id string, displayName, bio, username *string) (*User, error)
 	UpdateAvatar(ctx context.Context, id, url string) (*User, error)
 	UpdateAuthIdentity(ctx context.Context, id string, email *string, isAnonymous bool) (*User, error)
 	CreateRefreshToken(ctx context.Context, userID, hash string, expiresAt time.Time) error
@@ -42,6 +57,12 @@ type supabaseVerifier interface {
 	Verify(token string) (*supabase.Claims, error)
 }
 
+// passwordAuthenticator exchanges email+password for a Supabase access token,
+// powering username/email login server-side (nil → password login disabled).
+type passwordAuthenticator interface {
+	PasswordGrant(ctx context.Context, email, password string) (string, error)
+}
+
 // fileStorage uploads an object and returns its public URL.
 type fileStorage interface {
 	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
@@ -53,11 +74,43 @@ type Service struct {
 	tokens   *TokenManager
 	supabase supabaseVerifier
 	storage  fileStorage
+	auth     passwordAuthenticator // nil → username/password login disabled
 }
 
 // NewService wires the identity service.
 func NewService(repo repository, tokens *TokenManager, verifier supabaseVerifier, storage fileStorage) *Service {
 	return &Service{repo: repo, tokens: tokens, supabase: verifier, storage: storage}
+}
+
+// WithPasswordLogin enables username/email + password login via Supabase's
+// password grant. Without it, LoginWithPassword returns ErrUnauthorized.
+func (s *Service) WithPasswordLogin(a passwordAuthenticator) *Service {
+	s.auth = a
+	return s
+}
+
+// LoginWithPassword logs a user in by username OR email + password. The username
+// is resolved to its email and the credentials are checked against Supabase
+// server-side, so the client never sees the email. All failure modes return
+// ErrUnauthorized (generic) to avoid username/email enumeration.
+func (s *Service) LoginWithPassword(ctx context.Context, identifier, password string) (*TokenPair, *User, error) {
+	if s.auth == nil {
+		return nil, nil, ErrUnauthorized
+	}
+	identifier = strings.TrimSpace(identifier)
+	email := identifier
+	if !strings.Contains(identifier, "@") {
+		u, err := s.repo.GetByUsername(ctx, strings.ToLower(identifier))
+		if err != nil || u.Email == nil || u.IsAnonymous {
+			return nil, nil, ErrUnauthorized
+		}
+		email = *u.Email
+	}
+	token, err := s.auth.PasswordGrant(ctx, email, password)
+	if err != nil {
+		return nil, nil, ErrUnauthorized
+	}
+	return s.Exchange(ctx, token)
 }
 
 // Exchange verifies a Supabase token, provisions the user on first sight, and
@@ -153,9 +206,25 @@ func (s *Service) GetFolloweeIDs(ctx context.Context, followerID string) ([]stri
 	return s.repo.GetFolloweeIDs(ctx, followerID)
 }
 
-// UpdateProfile updates the caller's display name and/or bio.
-func (s *Service) UpdateProfile(ctx context.Context, id string, displayName, bio *string) (*User, error) {
-	return s.repo.UpdateProfile(ctx, id, displayName, bio)
+// UpdateProfile updates the caller's display name, bio and/or username. A
+// non-nil username is normalized (lowercased/trimmed) and validated; a clash
+// surfaces as ErrUsernameTaken.
+func (s *Service) UpdateProfile(ctx context.Context, id string, displayName, bio, username *string) (*User, error) {
+	if username != nil {
+		u := strings.ToLower(strings.TrimSpace(*username))
+		if !usernameRe.MatchString(u) || reservedUsernames[u] {
+			return nil, ErrInvalidUsername
+		}
+		username = &u
+	}
+	user, err := s.repo.UpdateProfile(ctx, id, displayName, bio, username)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrUsernameTaken
+		}
+		return nil, err
+	}
+	return user, nil
 }
 
 // UpdateAvatar uploads a new avatar image and stores its URL on the user.
@@ -196,7 +265,7 @@ func (s *Service) provisionUser(ctx context.Context, claims *supabase.Claims) (*
 		u, err := s.repo.CreateUser(ctx, CreateUserParams{
 			SupabaseID:  claims.Subject,
 			Email:       email,
-			Username:    generateUsername(claims.Email),
+			Username:    generateUsername(claims.Email, attempt),
 			Role:        "user",
 			IsAnonymous: claims.IsAnonymous,
 		})
@@ -248,17 +317,33 @@ func samePtr(a, b *string) bool {
 	return *a == *b
 }
 
-// generateUsername derives a unique-ish handle from an email local part.
-func generateUsername(email string) string {
+// maxUsernameBase caps the generated handle's base length so suffixes still fit
+// within the 20-char limit users are held to when changing their username.
+const maxUsernameBase = 18
+
+// generateUsername derives a handle from an email local part. The first attempt
+// returns a clean handle (e.g. "lhongquan1998"); only on a collision does it
+// append a suffix ("..._2", "..._3"), falling back to random on the last try.
+func generateUsername(email string, attempt int) string {
 	local := email
 	if i := strings.IndexByte(email, '@'); i > 0 {
 		local = email[:i]
 	}
-	local = sanitizeUsername(local)
-	if local == "" {
-		local = "traveler"
+	base := sanitizeUsername(local)
+	if base == "" {
+		base = "traveler"
 	}
-	return local + "_" + randHex(3)
+	if len(base) > maxUsernameBase {
+		base = base[:maxUsernameBase]
+	}
+	switch {
+	case attempt <= 0:
+		return base
+	case attempt < 4:
+		return base + "_" + strconv.Itoa(attempt+1)
+	default:
+		return base + "_" + randHex(2)
+	}
 }
 
 func sanitizeUsername(s string) string {
