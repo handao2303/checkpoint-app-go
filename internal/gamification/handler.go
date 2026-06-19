@@ -26,8 +26,9 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.Use(auth)
 		r.Get("/me/passport", h.Passport)
 		r.Get("/me/badges", h.Badges)
-		r.Get("/leaderboard", h.Leaderboard)
 	})
+	// Leaderboard is public; the caller's rank ("Me") is only included when signed in.
+	r.With(optionalAuth).Get("/leaderboard", h.Leaderboard)
 	r.With(optionalAuth).Get("/users/{username}/passport", h.UserPassport)
 }
 

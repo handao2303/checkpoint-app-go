@@ -86,13 +86,13 @@ func (h *Handler) WithCloudSyncer(s *cloudsync.Syncer) *Handler {
 func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler, checkinRL, uploadSlotsRL func(http.Handler) http.Handler) {
 	r.Route("/checkpoints", func(r chi.Router) {
 		// Public (optional auth) — shared checkpoint pages.
-		r.With(optionalAuth).Get("/by-user", h.ListByUser) // ?user_id={id} — profile gallery
+		r.With(optionalAuth).Get("/by-user", h.ListByUser)   // ?user_id={id} — profile gallery
+		r.With(optionalAuth).Get("/", h.ListInBounds)        // ?bbox=minLng,minLat,maxLng,maxLat (map) — public so anonymous can browse the map
 		r.With(optionalAuth).Get("/{id}", h.Get)
 		r.With(optionalAuth).Post("/{id}/view", h.View)
 
 		// Private (require auth).
 		r.With(auth, checkinRL).Post("/", h.Create)
-		r.With(auth).Get("/", h.ListInBounds) // ?bbox=minLng,minLat,maxLng,maxLat (map)
 		r.With(auth).Get("/nearby", h.ListNearby)
 		r.With(auth).Get("/me", h.ListMine)
 		r.With(auth, uploadSlotsRL).Post("/upload-slots", h.PrepareSlots)

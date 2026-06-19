@@ -85,6 +85,10 @@ func (s *Service) Leaderboard(ctx context.Context, userID string) (*Leaderboard,
 		top = v.([]LeaderboardEntry)
 	}
 
+	// Anonymous callers have no rank — return the board without "Me".
+	if userID == "" {
+		return &Leaderboard{Entries: top, Me: nil}, nil
+	}
 	me, err := s.repo.RankOf(ctx, userID)
 	if err != nil {
 		return nil, err
