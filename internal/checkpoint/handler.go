@@ -323,8 +323,18 @@ func (h *Handler) ListInBounds(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusBadRequest, "bbox must be 4 numbers")
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	list, err := h.svc.ListInBounds(r.Context(), b[0], b[1], b[2], b[3], limit)
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	var viewerID *string
+	if p, ok := authctx.From(r.Context()); ok && p.UserID != "" {
+		viewerID = &p.UserID
+	}
+	filter := BoundsFilter{
+		Category: q.Get("category"),
+		Mode:     q.Get("filter"),
+		ViewerID: viewerID,
+	}
+	list, err := h.svc.ListInBounds(r.Context(), b[0], b[1], b[2], b[3], limit, filter)
 	if err != nil {
 		h.listError(w, err)
 		return

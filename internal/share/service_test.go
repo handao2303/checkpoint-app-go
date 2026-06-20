@@ -56,6 +56,16 @@ func (m *mockIdentityService) GetByID(ctx context.Context, id string) (*identity
 	return m.userByID, nil
 }
 
+func (m *mockIdentityService) GetByIDOrUsername(ctx context.Context, ref string) (*identity.User, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if m.user != nil {
+		return m.user, nil
+	}
+	return m.userByID, nil
+}
+
 type mockPlaceService struct {
 	detail *place.Detail
 	err    error
@@ -153,10 +163,14 @@ func TestGetUserMeta(t *testing.T) {
 	bio := "Di va trai nghiem"
 	avatar := "https://r2.dev/avatar.jpg"
 	user := &identity.User{
-		Username:    "phuotthu",
-		DisplayName: &displayName,
-		Bio:         &bio,
-		AvatarURL:   &avatar,
+		ID:              "user-1",
+		Username:        "phuotthu",
+		DisplayName:     &displayName,
+		Bio:             &bio,
+		AvatarURL:       &avatar,
+		CheckpointCount: 12,
+		JourneyCount:    3,
+		TotalXP:         450,
 	}
 
 	mockCP := &mockCheckpointService{}
@@ -173,11 +187,14 @@ func TestGetUserMeta(t *testing.T) {
 	if meta.Title != "Phuot Thu (@phuotthu) trên Checkpoint" {
 		t.Errorf("wrong title: %s", meta.Title)
 	}
-	if meta.Description != "Di va trai nghiem" {
+	if meta.Description != "Di va trai nghiem · 12 cờ · 3 hành trình · 450 XP" {
 		t.Errorf("wrong description: %s", meta.Description)
 	}
 	if meta.Image != "https://r2.dev/avatar.jpg" {
 		t.Errorf("wrong image: %s", meta.Image)
+	}
+	if meta.RedirectURL != "https://checkpoint.app/u/user-1" {
+		t.Errorf("wrong redirect url: %s", meta.RedirectURL)
 	}
 }
 

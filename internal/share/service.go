@@ -21,6 +21,7 @@ type journeyService interface {
 type identityService interface {
 	GetByUsername(ctx context.Context, username string) (*identity.User, error)
 	GetByID(ctx context.Context, id string) (*identity.User, error)
+	GetByIDOrUsername(ctx context.Context, ref string) (*identity.User, error)
 }
 
 type placeService interface {
@@ -143,9 +144,10 @@ func (s *Service) GetJourneyMeta(ctx context.Context, id, frontendURL string) (*
 	}, nil
 }
 
-// GetUserMeta aggregates metadata for a user profile share.
-func (s *Service) GetUserMeta(ctx context.Context, username, frontendURL string) (*MetaData, error) {
-	u, err := s.identitySvc.GetByUsername(ctx, username)
+// GetUserMeta aggregates metadata for a user profile share. ref is a user id
+// (preferred, stable) or a username (legacy links).
+func (s *Service) GetUserMeta(ctx context.Context, ref, frontendURL string) (*MetaData, error) {
+	u, err := s.identitySvc.GetByIDOrUsername(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("get user profile: %w", err)
 	}
@@ -155,9 +157,12 @@ func (s *Service) GetUserMeta(ctx context.Context, username, frontendURL string)
 		title = fmt.Sprintf("%s (@%s) trên Checkpoint", *u.DisplayName, u.Username)
 	}
 
-	description := fmt.Sprintf("Xem hộ chiếu du lịch số và các khoảnh khắc khám phá của @%s trên Checkpoint.", u.Username)
+	// Headline the traveller's stats (flags planted, journeys) so the share card
+	// carries social proof, falling back to the bio as the lead-in when present.
+	stats := fmt.Sprintf("%d cờ · %d hành trình · %d XP", u.CheckpointCount, u.JourneyCount, u.TotalXP)
+	description := fmt.Sprintf("Xem hộ chiếu du lịch số của @%s trên Checkpoint — %s.", u.Username, stats)
 	if u.Bio != nil && *u.Bio != "" {
-		description = *u.Bio
+		description = fmt.Sprintf("%s · %s", *u.Bio, stats)
 	}
 
 	image := frontendURL + "/icon-512.png"
@@ -170,8 +175,8 @@ func (s *Service) GetUserMeta(ctx context.Context, username, frontendURL string)
 		Description: description,
 		Image:       image,
 		Type:        "profile",
-		URL:         fmt.Sprintf("%s/u/%s", frontendURL, username),
-		RedirectURL: fmt.Sprintf("%s/u/%s", frontendURL, username),
+		URL:         fmt.Sprintf("%s/u/%s", frontendURL, u.ID),
+		RedirectURL: fmt.Sprintf("%s/u/%s", frontendURL, u.ID),
 	}, nil
 }
 

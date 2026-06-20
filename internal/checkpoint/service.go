@@ -44,7 +44,7 @@ type repository interface {
 	ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error)
 	ListByUserPage(ctx context.Context, userID string, provinceCode string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
-	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error)
+	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int, f BoundsFilter) ([]*Checkpoint, error)
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
 	AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error)
 	CountImages(ctx context.Context, checkpointID string) (int, error)
@@ -221,15 +221,25 @@ func (s *Service) IncrementView(ctx context.Context, id string) (int, error) {
 	return s.repo.IncrementView(ctx, id)
 }
 
-// ListInBounds returns checkpoints inside a map viewport bounding box.
-func (s *Service) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error) {
+// BoundsFilter narrows a map viewport query. An empty or "all" Category means no
+// category filter; Mode "mine"/"following" restricts by ownership and requires a
+// ViewerID (otherwise the query returns no rows).
+type BoundsFilter struct {
+	Category string
+	Mode     string // "" | "mine" | "following"
+	ViewerID *string
+}
+
+// ListInBounds returns checkpoints inside a map viewport bounding box, narrowed
+// by the optional filter.
+func (s *Service) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int, f BoundsFilter) ([]*Checkpoint, error) {
 	if minLng > maxLng || minLat > maxLat {
 		return nil, fmt.Errorf("%w: bbox min must be <= max", ErrInvalidInput)
 	}
 	if limit <= 0 || limit > maxMapLimit {
 		limit = maxMapLimit
 	}
-	return s.repo.ListInBounds(ctx, minLng, minLat, maxLng, maxLat, limit)
+	return s.repo.ListInBounds(ctx, minLng, minLat, maxLng, maxLat, limit, f)
 }
 
 // ListNearby returns checkpoints near a point (radius clamped).

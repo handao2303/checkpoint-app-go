@@ -122,12 +122,20 @@ func (h *Handler) Nearby(w http.ResponseWriter, r *http.Request) {
 	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
-	places, err := h.svc.ListNearby(r.Context(), lng, lat, limit, offset, viewerID)
+	filter := NearbyFilter{Category: q.Get("category"), Sort: q.Get("sort")}
+	places, err := h.svc.ListNearby(r.Context(), lng, lat, limit, offset, viewerID, filter)
 	if err != nil {
 		h.listError(w, err)
 		return
 	}
-	respond.JSON(w, http.StatusOK, map[string]any{"places": places})
+	// Total (cached) so the list can show an accurate count without the client
+	// guessing from loaded pages. Non-fatal: fall back to omitting it on error.
+	total, err := h.svc.CountNearby(r.Context(), filter.Category)
+	if err != nil {
+		respond.JSON(w, http.StatusOK, map[string]any{"places": places})
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"places": places, "total": total})
 }
 
 // Get returns a place detail (aggregate) by id.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -385,13 +386,37 @@ func (r *Repository) ListUnassignedByUser(ctx context.Context, userID string, li
 
 // ListInBounds returns checkpoints whose location falls inside the given
 // bounding box (for the map viewport). Uses the GIST index via the && operator.
-func (r *Repository) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int) ([]*Checkpoint, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT `+cpListColumns+` FROM checkpoints
-		 WHERE deleted_at IS NULL
-		   AND location && ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography
-		 ORDER BY created_at DESC LIMIT $5`,
-		minLng, minLat, maxLng, maxLat, limit)
+// The optional filter narrows by category and/or ownership (mine/following);
+// a mine/following mode with no viewer yields no rows.
+func (r *Repository) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int, f BoundsFilter) ([]*Checkpoint, error) {
+	args := []any{minLng, minLat, maxLng, maxLat}
+	where := []string{
+		"deleted_at IS NULL",
+		"location && ST_MakeEnvelope($1, $2, $3, $4, 4326)::geography",
+	}
+	if f.Category != "" && f.Category != "all" {
+		args = append(args, f.Category)
+		where = append(where, fmt.Sprintf("category = $%d", len(args)))
+	}
+	switch f.Mode {
+	case "mine":
+		if f.ViewerID == nil {
+			return []*Checkpoint{}, nil
+		}
+		args = append(args, *f.ViewerID)
+		where = append(where, fmt.Sprintf("user_id = $%d", len(args)))
+	case "following":
+		if f.ViewerID == nil {
+			return []*Checkpoint{}, nil
+		}
+		args = append(args, *f.ViewerID)
+		where = append(where, fmt.Sprintf("user_id IN (SELECT followee_id FROM follows WHERE follower_id = $%d)", len(args)))
+	}
+	args = append(args, limit)
+	query := `SELECT ` + cpListColumns + ` FROM checkpoints WHERE ` +
+		strings.Join(where, " AND ") +
+		fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list checkpoints in bounds: %w", err)
 	}

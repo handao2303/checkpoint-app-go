@@ -40,10 +40,11 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		// Static /following must precede /{username} so it isn't read as a username.
 		r.With(auth).Get("/following", h.GetFollowing)
 		r.With(optionalAuth).Get("/by-ids", h.GetByIDs)
-		// Public profile (shared) — optional auth.
-		r.With(optionalAuth).Get("/{username}", h.GetByUsername)
-		r.With(auth).Post("/{username}/follow", h.Follow)
-		r.With(auth).Delete("/{username}/follow", h.Unfollow)
+		// Public profile (shared) — optional auth. {id} accepts a user id
+		// (preferred, stable) or a username (legacy links).
+		r.With(optionalAuth).Get("/{id}", h.GetProfile)
+		r.With(auth).Post("/{id}/follow", h.Follow)
+		r.With(auth).Delete("/{id}/follow", h.Unfollow)
 	})
 }
 
@@ -194,9 +195,9 @@ func (h *Handler) UploadAvatar(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, user)
 }
 
-// GetByUsername returns a public profile.
-func (h *Handler) GetByUsername(w http.ResponseWriter, r *http.Request) {
-	user, err := h.svc.GetByUsername(r.Context(), chi.URLParam(r, "username"))
+// GetProfile returns a public profile by id (preferred) or username (legacy).
+func (h *Handler) GetProfile(w http.ResponseWriter, r *http.Request) {
+	user, err := h.svc.GetByIDOrUsername(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		respond.Error(w, http.StatusNotFound, "user not found")
 		return
@@ -234,10 +235,10 @@ func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"ids": ids})
 }
 
-// Follow makes the caller follow {username}.
+// Follow makes the caller follow the user identified by {id} (id or username).
 func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
-	err := h.svc.Follow(r.Context(), p.UserID, chi.URLParam(r, "username"))
+	err := h.svc.Follow(r.Context(), p.UserID, chi.URLParam(r, "id"))
 	switch {
 	case err == nil:
 		respond.JSON(w, http.StatusNoContent, nil)
@@ -250,10 +251,10 @@ func (h *Handler) Follow(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Unfollow makes the caller stop following {username}.
+// Unfollow makes the caller stop following the user identified by {id}.
 func (h *Handler) Unfollow(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
-	err := h.svc.Unfollow(r.Context(), p.UserID, chi.URLParam(r, "username"))
+	err := h.svc.Unfollow(r.Context(), p.UserID, chi.URLParam(r, "id"))
 	switch {
 	case err == nil:
 		respond.JSON(w, http.StatusNoContent, nil)

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/quanluon/checkpoint-app/pkg/idref"
 	"github.com/quanluon/checkpoint-app/pkg/supabase"
 )
 
@@ -174,15 +175,26 @@ func (s *Service) GetByUsername(ctx context.Context, username string) (*User, er
 	return s.repo.GetByUsername(ctx, username)
 }
 
+// GetByIDOrUsername resolves a user by id when ref is a UUID, otherwise by
+// username. id is the stable reference (usernames can change); the username
+// path stays for backward-compatible links.
+func (s *Service) GetByIDOrUsername(ctx context.Context, ref string) (*User, error) {
+	if idref.IsUUID(ref) {
+		return s.repo.GetByID(ctx, ref)
+	}
+	return s.repo.GetByUsername(ctx, ref)
+}
+
 // GetByIDs returns a list of users by their IDs.
 func (s *Service) GetByIDs(ctx context.Context, ids []string) ([]*User, error) {
 	return s.repo.GetByIDs(ctx, ids)
 }
 
-// Follow makes followerID follow the user with followeeUsername. Returns
-// ErrUserNotFound if the target doesn't exist, ErrSelfFollow on self-follow.
-func (s *Service) Follow(ctx context.Context, followerID, followeeUsername string) error {
-	followee, err := s.repo.GetByUsername(ctx, followeeUsername)
+// Follow makes followerID follow the user identified by followeeRef (id or
+// username). Returns ErrUserNotFound if the target doesn't exist, ErrSelfFollow
+// on self-follow.
+func (s *Service) Follow(ctx context.Context, followerID, followeeRef string) error {
+	followee, err := s.GetByIDOrUsername(ctx, followeeRef)
 	if err != nil {
 		return err
 	}
@@ -192,9 +204,10 @@ func (s *Service) Follow(ctx context.Context, followerID, followeeUsername strin
 	return s.repo.Follow(ctx, followerID, followee.ID)
 }
 
-// Unfollow removes the follow edge from followerID to followeeUsername.
-func (s *Service) Unfollow(ctx context.Context, followerID, followeeUsername string) error {
-	followee, err := s.repo.GetByUsername(ctx, followeeUsername)
+// Unfollow removes the follow edge from followerID to the user identified by
+// followeeRef (id or username).
+func (s *Service) Unfollow(ctx context.Context, followerID, followeeRef string) error {
+	followee, err := s.GetByIDOrUsername(ctx, followeeRef)
 	if err != nil {
 		return err
 	}

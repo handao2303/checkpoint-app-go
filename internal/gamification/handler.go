@@ -29,7 +29,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 	})
 	// Leaderboard is public; the caller's rank ("Me") is only included when signed in.
 	r.With(optionalAuth).Get("/leaderboard", h.Leaderboard)
-	r.With(optionalAuth).Get("/users/{username}/passport", h.UserPassport)
+	r.With(optionalAuth).Get("/users/{id}/passport", h.UserPassport)
 }
 
 // Passport returns the caller's province stamps.
@@ -65,12 +65,13 @@ func (h *Handler) Leaderboard(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, board)
 }
 
-// UserPassport returns a specific user's province stamps by username.
+// UserPassport returns a specific user's province stamps by id (preferred) or
+// username (legacy).
 func (h *Handler) UserPassport(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
-	passport, err := h.svc.PassportByUsername(r.Context(), username)
+	ref := chi.URLParam(r, "id")
+	passport, err := h.svc.PassportByRef(r.Context(), ref)
 	if err != nil {
-		fmt.Println("error fetching passport for username", username, ":", err)
+		fmt.Println("error fetching passport for user", ref, ":", err)
 		respond.Error(w, http.StatusNotFound, "user not found")
 		return
 	}

@@ -203,13 +203,31 @@ func (r *Repository) Search(ctx context.Context, q string, near *Point, limit in
 	return places, r.enrichPlaces(ctx, places, viewerID)
 }
 
-// ListNearby returns places near a point (lng, lat) ordered from nearest to farthest with offset pagination.
-func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int, offset int, viewerID *string) ([]*Place, error) {
-	rows, err := r.db.Query(ctx,
-		`SELECT `+placeColumns+` FROM places
-		 ORDER BY location <-> ST_MakePoint($1, $2)::geography
-		 LIMIT $3 OFFSET $4`,
-		lng, lat, limit, offset)
+// ListNearby returns places near a point (lng, lat) with offset pagination.
+// By default ordered nearest→farthest; f.Sort == "popular" orders by check-in
+// count instead. f.Category (when set and not "all") restricts to one category.
+func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int, offset int, viewerID *string, f NearbyFilter) ([]*Place, error) {
+	// Only bind lng/lat when the distance ordering actually references them, so
+	// the arg count always matches the placeholders.
+	var args []any
+	var orderBy string
+	if f.Sort == "popular" {
+		orderBy = "checkin_count DESC, created_at DESC"
+	} else {
+		args = append(args, lng, lat)
+		orderBy = "location <-> ST_MakePoint($1, $2)::geography"
+	}
+	where := ""
+	if f.Category != "" && f.Category != "all" {
+		args = append(args, f.Category)
+		where = fmt.Sprintf(" WHERE category = $%d", len(args))
+	}
+	args = append(args, limit, offset)
+	limitArg := len(args) - 1
+	offsetArg := len(args)
+	query := fmt.Sprintf(`SELECT %s FROM places%s ORDER BY %s LIMIT $%d OFFSET $%d`,
+		placeColumns, where, orderBy, limitArg, offsetArg)
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list nearby places: %w", err)
 	}
@@ -218,6 +236,22 @@ func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, limit int
 		return nil, err
 	}
 	return places, r.enrichPlaces(ctx, places, viewerID)
+}
+
+// CountPlaces returns the total number of places, optionally restricted to a
+// category. Backs the Discover list count (cached by the service).
+func (r *Repository) CountPlaces(ctx context.Context, category string) (int, error) {
+	var n int
+	var err error
+	if category != "" && category != "all" {
+		err = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM places WHERE category = $1`, category).Scan(&n)
+	} else {
+		err = r.db.QueryRow(ctx, `SELECT COUNT(*) FROM places`).Scan(&n)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("count places: %w", err)
+	}
+	return n, nil
 }
 
 // GetDetail returns a place plus aggregated community data (avg rating, recent

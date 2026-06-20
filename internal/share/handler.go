@@ -76,7 +76,7 @@ func NewHandler(svc *Service, frontendURL string, rClient redis.Cmdable) *Handle
 func (h *Handler) Register(r chi.Router) {
 	r.Get("/share/checkpoint/{id}", h.ShareCheckpoint)
 	r.Get("/share/journey/{id}", h.ShareJourney)
-	r.Get("/share/user/{username}", h.ShareUser)
+	r.Get("/share/user/{id}", h.ShareUser)
 	r.Get("/share/place/{id}", h.SharePlace)
 }
 
@@ -140,16 +140,17 @@ func (h *Handler) ShareJourney(w http.ResponseWriter, r *http.Request) {
 	h.respondShare(w, r, meta)
 }
 
-// ShareUser handles user profile share links.
+// ShareUser handles user profile share links. {id} is a user id (preferred) or
+// a username (legacy links).
 func (h *Handler) ShareUser(w http.ResponseWriter, r *http.Request) {
-	username := chi.URLParam(r, "username")
-	key := "share:meta:user:" + username
+	ref := chi.URLParam(r, "id")
+	key := "share:meta:user:" + ref
 	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
-		return h.svc.GetUserMeta(r.Context(), username, h.frontendURL)
+		return h.svc.GetUserMeta(r.Context(), ref, h.frontendURL)
 	})
 	if err != nil {
 		log.Printf("share: error getting user profile meta: %v", err)
-		http.Redirect(w, r, h.frontendURL+"/u/"+username, http.StatusFound)
+		http.Redirect(w, r, h.frontendURL+"/u/"+ref, http.StatusFound)
 		return
 	}
 

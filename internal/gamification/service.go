@@ -8,6 +8,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/sync/singleflight"
+
+	"github.com/quanluon/checkpoint-app/pkg/idref"
 )
 
 const (
@@ -49,6 +51,15 @@ func (s *Service) PassportByUsername(ctx context.Context, username string) (*Pas
 		return nil, err
 	}
 	return s.repo.Passport(ctx, userID)
+}
+
+// PassportByRef returns the user's province stamps by id (preferred) or
+// username (legacy).
+func (s *Service) PassportByRef(ctx context.Context, ref string) (*Passport, error) {
+	if idref.IsUUID(ref) {
+		return s.repo.Passport(ctx, ref)
+	}
+	return s.PassportByUsername(ctx, ref)
 }
 
 // Badges returns the badge catalog annotated with the user's unlock state.

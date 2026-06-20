@@ -63,7 +63,7 @@ func (f *fakeRepo) ListByUserPage(_ context.Context, _ string, _ string, _ int, 
 func (f *fakeRepo) ListUnassignedByUser(context.Context, string, int, *CheckpointCursor) ([]*Checkpoint, error) {
 	return nil, nil
 }
-func (f *fakeRepo) ListInBounds(context.Context, float64, float64, float64, float64, int) ([]*Checkpoint, error) {
+func (f *fakeRepo) ListInBounds(context.Context, float64, float64, float64, float64, int, BoundsFilter) ([]*Checkpoint, error) {
 	return nil, nil
 }
 func (f *fakeRepo) ListNearby(context.Context, float64, float64, float64, int) ([]*Checkpoint, error) {
