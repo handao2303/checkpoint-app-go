@@ -16,7 +16,7 @@ const (
 	authURL     = "https://accounts.google.com/o/oauth2/v2/auth"
 	tokenURL    = "https://oauth2.googleapis.com/token"
 	albumsURL   = "https://photoslibrary.googleapis.com/v1/albums"
-	uploadURL   = "https://uploadphotos.googleapis.com/v1/uploads"
+	uploadURL   = "https://photoslibrary.googleapis.com/v1/uploads"
 	batchURL    = "https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate"
 	albumName   = "Checkpoint App"
 	photosScope = "https://www.googleapis.com/auth/photoslibrary.appendonly"
