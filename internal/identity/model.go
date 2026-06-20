@@ -31,6 +31,14 @@ type User struct {
 	LevelProgress float64 `json:"level_progress"`
 }
 
+// PublicUserSummary is the compact user card used by social profile lists.
+type PublicUserSummary struct {
+	ID          string  `json:"id"`
+	Username    string  `json:"username"`
+	DisplayName *string `json:"display_name,omitempty"`
+	AvatarURL   *string `json:"avatar_url,omitempty"`
+}
+
 // Claims is the payload of our own (backend-issued) access token.
 type Claims struct {
 	UserID   string `json:"user_id"`

@@ -52,6 +52,14 @@ func (r *Repository) withAvatarURL(u *User) *User {
 	return u
 }
 
+func (r *Repository) withSummaryAvatarURL(u *PublicUserSummary) *PublicUserSummary {
+	if u != nil && u.AvatarURL != nil {
+		url := storage.PublicURL(r.mediaBase, *u.AvatarURL)
+		u.AvatarURL = &url
+	}
+	return u
+}
+
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(
@@ -98,6 +106,51 @@ func (r *Repository) GetByIDs(ctx context.Context, ids []string) ([]*User, error
 		return nil, fmt.Errorf("iterate users by ids: %w", err)
 	}
 	return out, nil
+}
+
+func (r *Repository) scanPublicUserSummaries(rows pgx.Rows, op string) ([]PublicUserSummary, error) {
+	defer rows.Close()
+
+	out := make([]PublicUserSummary, 0)
+	for rows.Next() {
+		var u PublicUserSummary
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.AvatarURL); err != nil {
+			return nil, fmt.Errorf("scan %s user: %w", op, err)
+		}
+		out = append(out, *r.withSummaryAvatarURL(&u))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s users: %w", op, err)
+	}
+	return out, nil
+}
+
+// GetFollowers returns active users who follow userID, newest follow first.
+func (r *Repository) GetFollowers(ctx context.Context, userID string) ([]PublicUserSummary, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id, u.username, u.display_name, u.avatar_key
+		FROM follows f
+		JOIN users u ON u.id = f.follower_id
+		WHERE f.followee_id = $1 AND u.deleted_at IS NULL
+		ORDER BY f.created_at DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get followers: %w", err)
+	}
+	return r.scanPublicUserSummaries(rows, "followers")
+}
+
+// GetFollowingUsers returns active users followed by userID, newest follow first.
+func (r *Repository) GetFollowingUsers(ctx context.Context, userID string) ([]PublicUserSummary, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id, u.username, u.display_name, u.avatar_key
+		FROM follows f
+		JOIN users u ON u.id = f.followee_id
+		WHERE f.follower_id = $1 AND u.deleted_at IS NULL
+		ORDER BY f.created_at DESC`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get following users: %w", err)
+	}
+	return r.scanPublicUserSummaries(rows, "following")
 }
 
 // GetBySupabaseID returns the active user linked to a Supabase account.

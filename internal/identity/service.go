@@ -51,6 +51,8 @@ type repository interface {
 	Follow(ctx context.Context, followerID, followeeID string) error
 	Unfollow(ctx context.Context, followerID, followeeID string) error
 	GetFolloweeIDs(ctx context.Context, followerID string) ([]string, error)
+	GetFollowers(ctx context.Context, userID string) ([]PublicUserSummary, error)
+	GetFollowingUsers(ctx context.Context, userID string) ([]PublicUserSummary, error)
 }
 
 // supabaseVerifier verifies Supabase tokens during /auth/exchange.
@@ -217,6 +219,24 @@ func (s *Service) Unfollow(ctx context.Context, followerID, followeeRef string) 
 // GetFolloweeIDs returns the ids of users the caller follows.
 func (s *Service) GetFolloweeIDs(ctx context.Context, followerID string) ([]string, error) {
 	return s.repo.GetFolloweeIDs(ctx, followerID)
+}
+
+// GetFollowers returns compact public profiles for users following ref.
+func (s *Service) GetFollowers(ctx context.Context, ref string) ([]PublicUserSummary, error) {
+	user, err := s.GetByIDOrUsername(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.GetFollowers(ctx, user.ID)
+}
+
+// GetFollowingUsers returns compact public profiles followed by ref.
+func (s *Service) GetFollowingUsers(ctx context.Context, ref string) ([]PublicUserSummary, error) {
+	user, err := s.GetByIDOrUsername(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.GetFollowingUsers(ctx, user.ID)
 }
 
 // UpdateProfile updates the caller's display name, bio and/or username. A

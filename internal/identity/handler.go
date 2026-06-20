@@ -42,6 +42,8 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(optionalAuth).Get("/by-ids", h.GetByIDs)
 		// Public profile (shared) — optional auth. {id} accepts a user id
 		// (preferred, stable) or a username (legacy links).
+		r.With(optionalAuth).Get("/{id}/followers", h.GetFollowers)
+		r.With(optionalAuth).Get("/{id}/following-list", h.GetFollowingUsers)
 		r.With(optionalAuth).Get("/{id}", h.GetProfile)
 		r.With(auth).Post("/{id}/follow", h.Follow)
 		r.With(auth).Delete("/{id}/follow", h.Unfollow)
@@ -233,6 +235,26 @@ func (h *Handler) GetFollowing(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond.JSON(w, http.StatusOK, map[string]any{"ids": ids})
+}
+
+// GetFollowers returns compact public profiles for users following {id}.
+func (h *Handler) GetFollowers(w http.ResponseWriter, r *http.Request) {
+	users, err := h.svc.GetFollowers(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		respond.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+	respond.JSON(w, http.StatusOK, users)
+}
+
+// GetFollowingUsers returns compact public profiles followed by {id}.
+func (h *Handler) GetFollowingUsers(w http.ResponseWriter, r *http.Request) {
+	users, err := h.svc.GetFollowingUsers(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		respond.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+	respond.JSON(w, http.StatusOK, users)
 }
 
 // Follow makes the caller follow the user identified by {id} (id or username).
