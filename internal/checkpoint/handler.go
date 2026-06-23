@@ -128,6 +128,12 @@ type updateRequest struct {
 	Name   string  `json:"name"`
 	Note   *string `json:"note"`
 	Rating *int16  `json:"rating"`
+	Images *[]struct {
+		ID           string  `json:"id"`
+		ObjectKey    string  `json:"object_key"`
+		ThumbnailKey *string `json:"thumbnail_key"`
+		Type         string  `json:"type"`
+	} `json:"images"`
 }
 
 // Create handles a check-in. The request body must include pre-uploaded image keys.
@@ -167,6 +173,10 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond.Error(w, http.StatusInternalServerError, "could not create checkpoint")
+		return
+	}
+	if result.Duplicate {
+		respond.JSON(w, http.StatusOK, result)
 		return
 	}
 
@@ -402,7 +412,7 @@ func (h *Handler) View(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"view_count": count})
 }
 
-// Update edits the caller's checkpoint content only.
+// Update edits the caller's checkpoint content and optionally replaces media.
 func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	var req updateRequest
@@ -410,10 +420,24 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	cp, err := h.svc.Update(r.Context(), chi.URLParam(r, "id"), p.UserID, UpdateInput{
+	var images *[]UpdateMediaInput
+	if req.Images != nil {
+		next := make([]UpdateMediaInput, 0, len(*req.Images))
+		for _, img := range *req.Images {
+			next = append(next, UpdateMediaInput{
+				ID:           img.ID,
+				ObjectKey:    img.ObjectKey,
+				ThumbnailKey: img.ThumbnailKey,
+				Type:         img.Type,
+			})
+		}
+		images = &next
+	}
+	result, err := h.svc.Update(r.Context(), chi.URLParam(r, "id"), p.UserID, UpdateInput{
 		Name:   req.Name,
 		Note:   req.Note,
 		Rating: req.Rating,
+		Images: images,
 	})
 	if err != nil {
 		switch {
@@ -426,7 +450,10 @@ func (h *Handler) Update(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	respond.JSON(w, http.StatusOK, cp)
+	if result.HasPendingMedia {
+		h.dispatchMedia(r.Context(), result.Checkpoint.ID, p.UserID)
+	}
+	respond.JSON(w, http.StatusOK, result.Checkpoint)
 }
 
 // UploadImages attaches multipart "images" files to a checkpoint the caller owns.

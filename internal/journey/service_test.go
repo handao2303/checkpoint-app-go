@@ -27,7 +27,10 @@ func (f *fakeRepo) GetByID(context.Context, string) (*Journey, error) {
 func (f *fakeRepo) GetDetail(context.Context, string) (*Detail, error) {
 	return nil, nil
 }
-func (f *fakeRepo) Update(context.Context, string, string, *string, *string) (*Journey, error) {
+func (f *fakeRepo) ListVisibleByUser(context.Context, string, *string) ([]*Journey, error) {
+	return nil, nil
+}
+func (f *fakeRepo) Update(context.Context, string, string, *string, *string, *string) (*Journey, error) {
 	return nil, nil
 }
 func (f *fakeRepo) SetActive(context.Context, string, string, bool) (*Journey, error) {
@@ -41,6 +44,9 @@ func (f *fakeRepo) Delete(_ context.Context, _ string, _ string, mode DeleteMode
 	return &DeleteResult{}, nil
 }
 func (f *fakeRepo) AssignCheckpoint(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeRepo) ReplaceCheckpoints(context.Context, string, []string, string) error {
 	return nil
 }
 func (f *fakeRepo) AssignCheckpoints(_ context.Context, journeyID string, checkpointIDs []string, userID string) error {

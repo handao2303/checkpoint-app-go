@@ -14,13 +14,15 @@ var ErrInvalidInput = errors.New("invalid input")
 type repository interface {
 	Create(ctx context.Context, p CreateParams) (*Journey, error)
 	ListByUser(ctx context.Context, userID string) ([]*Journey, error)
+	ListVisibleByUser(ctx context.Context, ownerID string, callerID *string) ([]*Journey, error)
 	GetByID(ctx context.Context, id string) (*Journey, error)
 	GetDetail(ctx context.Context, id string) (*Detail, error)
-	Update(ctx context.Context, id, userID string, title, description *string) (*Journey, error)
+	Update(ctx context.Context, id, userID string, title, description, visibility *string) (*Journey, error)
 	SetActive(ctx context.Context, id, userID string, active bool) (*Journey, error)
 	Delete(ctx context.Context, id, userID string, mode DeleteMode) (*DeleteResult, error)
 	AssignCheckpoint(ctx context.Context, journeyID, checkpointID, userID string) error
 	AssignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error
+	ReplaceCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error
 }
 
 // Service holds the journey business logic.
@@ -33,18 +35,34 @@ func NewService(repo repository) *Service {
 	return &Service{repo: repo}
 }
 
-// Create validates and creates a journey.
-func (s *Service) Create(ctx context.Context, userID, title string, description *string) (*Journey, error) {
+// Create validates and creates a journey. An empty visibility defaults to only_me.
+func (s *Service) Create(ctx context.Context, userID, title string, description *string, visibility string) (*Journey, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return nil, fmt.Errorf("%w: title is required", ErrInvalidInput)
 	}
-	return s.repo.Create(ctx, CreateParams{UserID: userID, Title: title, Description: trimPtr(description)})
+	if visibility == "" {
+		visibility = VisibilityOnlyMe
+	}
+	if !validVisibility(visibility) {
+		return nil, fmt.Errorf("%w: invalid visibility", ErrInvalidInput)
+	}
+	return s.repo.Create(ctx, CreateParams{UserID: userID, Title: title, Description: trimPtr(description), Visibility: visibility})
 }
 
 // ListMine returns the caller's journeys.
 func (s *Service) ListMine(ctx context.Context, userID string) ([]*Journey, error) {
 	return s.repo.ListByUser(ctx, userID)
+}
+
+// ListForViewer returns ownerID's journeys visible to callerID (empty when
+// anonymous), filtered by each journey's visibility.
+func (s *Service) ListForViewer(ctx context.Context, ownerID, callerID string) ([]*Journey, error) {
+	var caller *string
+	if callerID != "" {
+		caller = &callerID
+	}
+	return s.repo.ListVisibleByUser(ctx, ownerID, caller)
 }
 
 // GetDetail returns a journey with stats and stops.
@@ -57,7 +75,10 @@ func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput)
 	var j *Journey
 	var err error
 
-	if in.Title != nil || in.Description != nil {
+	if in.Visibility != nil && !validVisibility(*in.Visibility) {
+		return nil, fmt.Errorf("%w: invalid visibility", ErrInvalidInput)
+	}
+	if in.Title != nil || in.Description != nil || in.Visibility != nil {
 		title := in.Title
 		if title != nil {
 			t := strings.TrimSpace(*title)
@@ -66,7 +87,7 @@ func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput)
 			}
 			title = &t
 		}
-		if j, err = s.repo.Update(ctx, id, userID, title, trimPtr(in.Description)); err != nil {
+		if j, err = s.repo.Update(ctx, id, userID, title, trimPtr(in.Description), in.Visibility); err != nil {
 			return nil, err
 		}
 	}
@@ -118,6 +139,25 @@ func (s *Service) AssignCheckpoints(ctx context.Context, journeyID string, check
 		normalized = append(normalized, id)
 	}
 	return s.repo.AssignCheckpoints(ctx, journeyID, normalized, userID)
+}
+
+// ReplaceCheckpoints sets the journey's checkpoints to exactly checkpointIDs.
+// An empty list is allowed and clears the journey. Duplicates are rejected.
+func (s *Service) ReplaceCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error {
+	seen := make(map[string]struct{}, len(checkpointIDs))
+	normalized := make([]string, 0, len(checkpointIDs))
+	for _, id := range checkpointIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return fmt.Errorf("%w: checkpoint id is required", ErrInvalidInput)
+		}
+		if _, ok := seen[id]; ok {
+			return fmt.Errorf("%w: duplicate checkpoint id", ErrInvalidInput)
+		}
+		seen[id] = struct{}{}
+		normalized = append(normalized, id)
+	}
+	return s.repo.ReplaceCheckpoints(ctx, journeyID, normalized, userID)
 }
 
 func trimPtr(s *string) *string {

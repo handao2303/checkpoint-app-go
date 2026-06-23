@@ -45,6 +45,7 @@ type CreateParams struct {
 	JourneyID    *string    // optional: attach to a journey (else active journey)
 	TakenAt      *time.Time // optional source-photo capture timestamp
 	XPReward     int
+	RequestHash  string
 	Images       []ImageKeys // pre-uploaded media to link in the same tx (required ≥1)
 }
 
@@ -55,15 +56,34 @@ type CreateResult struct {
 	XPAwarded  int                  `json:"xp_awarded"`
 	TotalXP    int                  `json:"total_xp"`
 	Level      int                  `json:"level"`
+	Duplicate  bool                 `json:"duplicate,omitempty"`
 	NewBadges  []gamification.Badge `json:"new_badges,omitempty"` // badges unlocked by this check-in
 	Images     []Image              `json:"images,omitempty"`     // all images linked at creation time
 }
 
 // UpdateParams are the owner-scoped editable checkpoint fields.
 type UpdateParams struct {
-	Name   string
-	Note   *string
-	Rating *int16
+	Name         string
+	Note         *string
+	Rating       *int16
+	ReplaceMedia bool
+	Media        []UpdateMediaItem
+}
+
+// UpdateMediaItem is one entry in the final media order for a checkpoint edit.
+// Existing media is identified by ID; new media is identified by pre-uploaded
+// object keys.
+type UpdateMediaItem struct {
+	ID           string
+	ObjectKey    string
+	ThumbnailKey *string
+	Type         string
+}
+
+// UpdateResult is the committed outcome of an owner-scoped checkpoint edit.
+type UpdateResult struct {
+	Checkpoint      *Checkpoint
+	HasPendingMedia bool
 }
 
 // Image is a media item attached to a checkpoint. Type is "image" or "video".

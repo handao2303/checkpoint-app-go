@@ -2,6 +2,9 @@ package checkpoint
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +43,7 @@ type repository interface {
 	Create(ctx context.Context, p CreateParams) (*CreateResult, error)
 	GetByID(ctx context.Context, id string) (*Checkpoint, error)
 	GetDetail(ctx context.Context, id string) (*Detail, error)
-	Update(ctx context.Context, id, userID string, p UpdateParams) (*Checkpoint, error)
+	Update(ctx context.Context, id, userID string, p UpdateParams) (*UpdateResult, error)
 	ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error)
 	ListByUserPage(ctx context.Context, userID string, provinceCode string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
@@ -49,14 +52,13 @@ type repository interface {
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
 	AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error)
 	CountImages(ctx context.Context, checkpointID string) (int, error)
-	Delete(ctx context.Context, id, userID string) (imageKeys []string, err error)
+	Delete(ctx context.Context, id, userID string) error
 	IncrementView(ctx context.Context, id string) (int, error)
 }
 
-// fileStorage stores and removes image objects.
+// fileStorage stores checkpoint media objects.
 type fileStorage interface {
 	Upload(ctx context.Context, key, contentType string, body io.Reader) (string, error)
-	Delete(ctx context.Context, key string) error
 	// PresignUpload returns a presigned PUT URL valid for ttlSeconds, allowing
 	// browsers to upload directly to R2 without routing through this server.
 	PresignUpload(key string, ttlSeconds int) string
@@ -98,11 +100,42 @@ type Input struct {
 	Images []ImageKeys
 }
 
+type createRequestHashPayload struct {
+	Name         string                   `json:"name"`
+	Category     string                   `json:"category"`
+	Note         *string                  `json:"note,omitempty"`
+	Rating       *int16                   `json:"rating,omitempty"`
+	Lat          float64                  `json:"lat"`
+	Lng          float64                  `json:"lng"`
+	Address      *string                  `json:"address,omitempty"`
+	Province     *string                  `json:"province,omitempty"`
+	ProvinceCode *string                  `json:"province_code,omitempty"`
+	PlaceID      *string                  `json:"place_id,omitempty"`
+	JourneyID    *string                  `json:"journey_id,omitempty"`
+	TakenAt      *time.Time               `json:"taken_at,omitempty"`
+	Images       []createRequestHashMedia `json:"images"`
+}
+
+type createRequestHashMedia struct {
+	ObjectKey    string  `json:"object_key"`
+	ThumbnailKey *string `json:"thumbnail_key,omitempty"`
+	Type         string  `json:"type"`
+}
+
 // UpdateInput is the editable checkpoint content surface.
 type UpdateInput struct {
 	Name   string
 	Note   *string
 	Rating *int16
+	Images *[]UpdateMediaInput
+}
+
+// UpdateMediaInput is one item in the caller's final edited media gallery.
+type UpdateMediaInput struct {
+	ID           string
+	ObjectKey    string
+	ThumbnailKey *string
+	Type         string
 }
 
 // CheckpointCursor is a keyset cursor for checkpoint lists ordered by newest
@@ -137,6 +170,7 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 	if category == "" {
 		category = "other"
 	}
+	note := trimStringPtr(in.Note)
 
 	// Attach to the journey the user picked (the client chooses one of their
 	// active journeys). Validate ownership so a check-in can't be slipped into
@@ -150,35 +184,30 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 
 	// Address and province are resolved by the client (lib/bigdatacloud.ts) before
 	// submit, so the server just sanitizes and stores what it receives.
-	address := in.Address
-	if address != nil {
-		trimmed := strings.TrimSpace(*address)
-		if trimmed == "" {
-			address = nil
-		} else {
-			address = &trimmed
-		}
-	}
-
-	var province *string
-	if in.Province != nil {
-		if p := strings.TrimSpace(*in.Province); p != "" {
-			province = &p
-		}
-	}
-
-	var provinceCode *string
-	if in.ProvinceCode != nil {
-		if p := strings.TrimSpace(*in.ProvinceCode); p != "" {
-			provinceCode = &p
-		}
-	}
+	address := trimStringPtr(in.Address)
+	province := trimStringPtr(in.Province)
+	provinceCode := trimStringPtr(in.ProvinceCode)
+	requestHash := checkpointRequestHash(createRequestHashPayload{
+		Name:         name,
+		Category:     category,
+		Note:         note,
+		Rating:       in.Rating,
+		Lat:          in.Lat,
+		Lng:          in.Lng,
+		Address:      address,
+		Province:     province,
+		ProvinceCode: provinceCode,
+		PlaceID:      in.PlaceID,
+		JourneyID:    journeyID,
+		TakenAt:      in.TakenAt,
+		Images:       hashMedia(in.Images),
+	})
 
 	return s.repo.Create(ctx, CreateParams{
 		UserID:       userID,
 		Name:         name,
 		Category:     category,
-		Note:         in.Note,
+		Note:         note,
 		Rating:       in.Rating,
 		Lat:          in.Lat,
 		Lng:          in.Lng,
@@ -189,8 +218,41 @@ func (s *Service) Create(ctx context.Context, userID string, in Input) (*CreateR
 		JourneyID:    journeyID,
 		TakenAt:      in.TakenAt,
 		XPReward:     checkinXP,
+		RequestHash:  requestHash,
 		Images:       in.Images,
 	})
+}
+
+func trimStringPtr(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
+}
+
+func hashMedia(images []ImageKeys) []createRequestHashMedia {
+	media := make([]createRequestHashMedia, 0, len(images))
+	for _, image := range images {
+		media = append(media, createRequestHashMedia{
+			ObjectKey:    image.ObjectKey,
+			ThumbnailKey: image.ThumbnailKey,
+			Type:         mediaTypeOrDefault(image.Type),
+		})
+	}
+	return media
+}
+
+func checkpointRequestHash(payload createRequestHashPayload) string {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // GetDetail returns a checkpoint with images and author.
@@ -200,7 +262,7 @@ func (s *Service) GetDetail(ctx context.Context, id string) (*Detail, error) {
 
 // Update edits a caller-owned checkpoint's content. It deliberately does not
 // touch location, media, place, journey, XP, or counters.
-func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput) (*Checkpoint, error) {
+func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput) (*UpdateResult, error) {
 	name := strings.TrimSpace(in.Name)
 	if name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrInvalidInput)
@@ -214,7 +276,79 @@ func (s *Service) Update(ctx context.Context, id, userID string, in UpdateInput)
 			note = &trimmed
 		}
 	}
-	return s.repo.Update(ctx, id, userID, UpdateParams{Name: name, Note: note, Rating: in.Rating})
+	params := UpdateParams{Name: name, Note: note, Rating: in.Rating}
+	if in.Images != nil {
+		media, err := normalizeUpdateMedia(*in.Images)
+		if err != nil {
+			return nil, err
+		}
+		params.ReplaceMedia = true
+		params.Media = media
+	}
+	result, err := s.repo.Update(ctx, id, userID, params)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func normalizeUpdateMedia(items []UpdateMediaInput) ([]UpdateMediaItem, error) {
+	if len(items) == 0 {
+		return nil, fmt.Errorf("%w: ít nhất 1 ảnh hoặc video", ErrInvalidInput)
+	}
+	if len(items) > maxMedia {
+		return nil, fmt.Errorf("%w: tối đa %d media/checkpoint", ErrInvalidInput, maxMedia)
+	}
+	media := make([]UpdateMediaItem, 0, len(items))
+	newKeys := make([]ImageKeys, 0, len(items))
+	types := make([]string, 0, len(items))
+	seenIDs := map[string]bool{}
+	seenObjectKeys := map[string]bool{}
+	for _, item := range items {
+		t, err := normalizeMediaType(item.Type)
+		if err != nil {
+			return nil, err
+		}
+		hasID := strings.TrimSpace(item.ID) != ""
+		hasObjectKey := strings.TrimSpace(item.ObjectKey) != ""
+		if hasID == hasObjectKey {
+			return nil, fmt.Errorf("%w: media item must have exactly one id or object_key", ErrInvalidInput)
+		}
+		next := UpdateMediaItem{
+			ID:           strings.TrimSpace(item.ID),
+			ObjectKey:    strings.TrimSpace(item.ObjectKey),
+			ThumbnailKey: item.ThumbnailKey,
+			Type:         t,
+		}
+		if hasID {
+			if seenIDs[next.ID] {
+				return nil, fmt.Errorf("%w: duplicate media id", ErrInvalidInput)
+			}
+			seenIDs[next.ID] = true
+		}
+		if hasObjectKey {
+			if seenObjectKeys[next.ObjectKey] {
+				return nil, fmt.Errorf("%w: duplicate media key", ErrInvalidInput)
+			}
+			seenObjectKeys[next.ObjectKey] = true
+			newKeys = append(newKeys, ImageKeys{
+				ObjectKey:    next.ObjectKey,
+				ThumbnailKey: next.ThumbnailKey,
+				Type:         t,
+			})
+		}
+		types = append(types, t)
+		media = append(media, next)
+	}
+	if len(newKeys) > 0 {
+		if err := validateMediaKeys(newKeys); err != nil {
+			return nil, err
+		}
+	}
+	if err := validateMediaTypeCounts(types); err != nil {
+		return nil, err
+	}
+	return media, nil
 }
 
 // IncrementView records one view of a checkpoint and returns the new total.
@@ -358,6 +492,8 @@ func validateMediaKeys(keys []ImageKeys) error {
 		return fmt.Errorf("%w: tối đa %d media/checkpoint", ErrInvalidInput, maxMedia)
 	}
 	types := make([]string, len(keys))
+	seenObjectKeys := map[string]bool{}
+	seenThumbnailKeys := map[string]bool{}
 	for i, item := range keys {
 		t, err := normalizeMediaType(item.Type)
 		if err != nil {
@@ -368,6 +504,10 @@ func validateMediaKeys(keys []ImageKeys) error {
 		if !strings.HasPrefix(item.ObjectKey, "checkpoints/") {
 			return fmt.Errorf("%w: invalid media key", ErrInvalidInput)
 		}
+		if seenObjectKeys[item.ObjectKey] {
+			return fmt.Errorf("%w: duplicate media key", ErrInvalidInput)
+		}
+		seenObjectKeys[item.ObjectKey] = true
 		lowerKey := strings.ToLower(item.ObjectKey)
 		if t == MediaTypeImage && !strings.HasSuffix(lowerKey, ".jpg") && !strings.HasSuffix(lowerKey, ".jpeg") {
 			return fmt.Errorf("%w: image key must be jpg", ErrInvalidInput)
@@ -380,6 +520,10 @@ func validateMediaKeys(keys []ImageKeys) error {
 			if !strings.HasPrefix(*item.ThumbnailKey, "checkpoints/") {
 				return fmt.Errorf("%w: invalid thumbnail key", ErrInvalidInput)
 			}
+			if seenThumbnailKeys[*item.ThumbnailKey] {
+				return fmt.Errorf("%w: duplicate thumbnail key", ErrInvalidInput)
+			}
+			seenThumbnailKeys[*item.ThumbnailKey] = true
 			if !strings.HasSuffix(thumb, ".jpg") && !strings.HasSuffix(thumb, ".jpeg") {
 				return fmt.Errorf("%w: thumbnail key must be jpg", ErrInvalidInput)
 			}
@@ -421,26 +565,38 @@ func (s *Service) AddImages(ctx context.Context, checkpointID, userID string, up
 	// Upload to R2 in parallel — independent objects, so 3 photos take ~1 round
 	// trip instead of 3. Order is preserved via the indexed keys slice.
 	keys := make([]ImageKeys, len(uploads))
+	usedKeys := map[string]bool{}
+	for i := range uploads {
+		keys[i].ObjectKey = uniqueObjectKey(usedKeys, fmt.Sprintf("checkpoints/%s/", checkpointID), exts[i])
+		keys[i].Type = MediaTypeImage
+		if uploads[i].ThumbnailBody != nil {
+			if thumbExt := imageExt(uploads[i].ThumbnailContentType); thumbExt != "" {
+				thumbKey := uniqueObjectKey(usedKeys, fmt.Sprintf("checkpoints/%s/thumbnails/", checkpointID), thumbExt)
+				keys[i].ThumbnailKey = &thumbKey
+			}
+		}
+	}
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(maxImages)
 	for i := range uploads {
 		g.Go(func() error {
-			key := fmt.Sprintf("checkpoints/%s/%s%s", checkpointID, randHex(8), exts[i])
-			storedKey, err := s.storage.Upload(gctx, key, uploads[i].ContentType, uploads[i].Body)
+			storedKey, err := s.storage.Upload(gctx, keys[i].ObjectKey, uploads[i].ContentType, uploads[i].Body)
 			if err != nil {
 				return fmt.Errorf("upload image: %w", err)
 			}
 			keys[i].ObjectKey = storedKey
-			keys[i].Type = MediaTypeImage
-			if uploads[i].ThumbnailBody != nil {
-				if thumbExt := imageExt(uploads[i].ThumbnailContentType); thumbExt != "" {
-					thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s%s", checkpointID, randHex(8), thumbExt)
-					storedThumb, thumbErr := s.storage.Upload(gctx, thumbKey, uploads[i].ThumbnailContentType, uploads[i].ThumbnailBody)
-					if thumbErr != nil {
-						log.Printf("upload checkpoint thumbnail: %v", thumbErr)
-					} else {
-						keys[i].ThumbnailKey = &storedThumb
-					}
+			if keys[i].ThumbnailKey != nil {
+				storedThumb, thumbErr := s.storage.Upload(
+					gctx,
+					*keys[i].ThumbnailKey,
+					uploads[i].ThumbnailContentType,
+					uploads[i].ThumbnailBody,
+				)
+				if thumbErr != nil {
+					log.Printf("upload checkpoint thumbnail: %v", thumbErr)
+					keys[i].ThumbnailKey = nil
+				} else {
+					keys[i].ThumbnailKey = &storedThumb
 				}
 			}
 			return nil
@@ -475,13 +631,14 @@ func (s *Service) PrepareSlots(_ context.Context, _ string, count int, types []s
 	// (assigned by the DB) will differ — the service validates "checkpoints/" prefix.
 	prefix := randHex(16)
 	slots := make([]UploadSlot, count)
+	usedKeys := map[string]bool{}
 	for i := range slots {
 		ext := ".jpg"
 		if mediaTypes[i] == MediaTypeVideo {
 			ext = ".mp4"
 		}
-		objKey := fmt.Sprintf("checkpoints/%s/%s%s", prefix, randHex(8), ext)
-		thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s.jpg", prefix, randHex(8))
+		objKey := uniqueObjectKey(usedKeys, fmt.Sprintf("checkpoints/%s/", prefix), ext)
+		thumbKey := uniqueObjectKey(usedKeys, fmt.Sprintf("checkpoints/%s/thumbnails/", prefix), ".jpg")
 		slots[i] = UploadSlot{
 			UploadURL:          s.storage.PresignUpload(objKey, presignTTL),
 			ObjectKey:          objKey,
@@ -490,6 +647,17 @@ func (s *Service) PrepareSlots(_ context.Context, _ string, count int, types []s
 		}
 	}
 	return slots, nil
+}
+
+func uniqueObjectKey(used map[string]bool, prefix, ext string) string {
+	for {
+		key := fmt.Sprintf("%s%s%s", prefix, randHex(8), ext)
+		if used[key] {
+			continue
+		}
+		used[key] = true
+		return key
+	}
 }
 
 // PrepareUploads generates presigned R2 PUT URLs so the client can upload
@@ -515,9 +683,10 @@ func (s *Service) PrepareUploads(ctx context.Context, checkpointID, userID strin
 	}
 
 	slots := make([]UploadSlot, count)
+	usedKeys := map[string]bool{}
 	for i := range slots {
-		objKey := fmt.Sprintf("checkpoints/%s/%s.jpg", checkpointID, randHex(8))
-		thumbKey := fmt.Sprintf("checkpoints/%s/thumbnails/%s.jpg", checkpointID, randHex(8))
+		objKey := uniqueObjectKey(usedKeys, fmt.Sprintf("checkpoints/%s/", checkpointID), ".jpg")
+		thumbKey := uniqueObjectKey(usedKeys, fmt.Sprintf("checkpoints/%s/thumbnails/", checkpointID), ".jpg")
 		slots[i] = UploadSlot{
 			UploadURL:          s.storage.PresignUpload(objKey, presignTTL),
 			ObjectKey:          objKey,
@@ -617,23 +786,9 @@ func checkpointPage(list []*Checkpoint, limit int) *CheckpointPage {
 	return page
 }
 
-// Delete hard-deletes a checkpoint the caller owns (XP/stats reversed, orphaned
-// place removed), then best-effort removes its images from storage — the DB is
-// the source of truth and an orphaned file is harmless, so storage errors are
-// only logged.
+// Delete hard-deletes a checkpoint the caller owns and reverses DB-side XP/stats.
+// Media objects are intentionally left in storage; DB rows are the source of
+// truth for whether media is visible in the app.
 func (s *Service) Delete(ctx context.Context, id, userID string) error {
-	keys, err := s.repo.Delete(ctx, id, userID)
-	if err != nil {
-		return err
-	}
-	for _, key := range keys {
-		// Legacy rows stored full URLs instead of keys — nothing to delete there.
-		if key == "" || strings.HasPrefix(key, "http://") || strings.HasPrefix(key, "https://") {
-			continue
-		}
-		if err := s.storage.Delete(ctx, key); err != nil {
-			log.Printf("delete checkpoint image %q: %v", key, err)
-		}
-	}
-	return nil
+	return s.repo.Delete(ctx, id, userID)
 }

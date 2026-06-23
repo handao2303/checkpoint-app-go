@@ -2,6 +2,24 @@ package journey
 
 import "time"
 
+// Visibility controls who can see a journey in a user's profile list. Note that
+// the journey detail endpoint stays link-shareable regardless of this value.
+const (
+	VisibilityOnlyMe    = "only_me"
+	VisibilityFollowers = "followers"
+	VisibilityPublic    = "public"
+)
+
+// validVisibility reports whether v is one of the allowed visibility values.
+func validVisibility(v string) bool {
+	switch v {
+	case VisibilityOnlyMe, VisibilityFollowers, VisibilityPublic:
+		return true
+	default:
+		return false
+	}
+}
+
 // Journey is a user's trip — a named collection of check-ins.
 type Journey struct {
 	ID          string     `json:"id"`
@@ -9,6 +27,7 @@ type Journey struct {
 	Title       string     `json:"title"`
 	Description *string    `json:"description,omitempty"`
 	IsActive    bool       `json:"is_active"`
+	Visibility  string     `json:"visibility"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	EndedAt     *time.Time `json:"ended_at,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
@@ -20,6 +39,7 @@ type CreateParams struct {
 	UserID      string
 	Title       string
 	Description *string
+	Visibility  string
 }
 
 // UpdateInput is a partial update (PATCH). Nil fields are left unchanged.
@@ -27,6 +47,7 @@ type UpdateInput struct {
 	Title       *string `json:"title"`
 	Description *string `json:"description"`
 	IsActive    *bool   `json:"is_active"`
+	Visibility  *string `json:"visibility"`
 }
 
 // DeleteMode controls what happens to checkpoints attached to a deleted journey.

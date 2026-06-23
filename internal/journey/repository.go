@@ -34,12 +34,12 @@ func NewRepository(db *pgxpool.Pool, mediaBase string, xp ...gamificationTx) *Re
 	return &Repository{db: db, mediaBase: mediaBase, xp: tx}
 }
 
-const journeyColumns = `id, user_id, title, description, is_active, started_at, ended_at, created_at, updated_at`
+const journeyColumns = `id, user_id, title, description, is_active, visibility, started_at, ended_at, created_at, updated_at`
 
 func scanJourney(row pgx.Row) (*Journey, error) {
 	var j Journey
 	err := row.Scan(&j.ID, &j.UserID, &j.Title, &j.Description, &j.IsActive,
-		&j.StartedAt, &j.EndedAt, &j.CreatedAt, &j.UpdatedAt)
+		&j.Visibility, &j.StartedAt, &j.EndedAt, &j.CreatedAt, &j.UpdatedAt)
 	return &j, err
 }
 
@@ -63,8 +63,8 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (j *Journey, er
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	j, err = getJourney(tx.QueryRow(ctx,
-		`INSERT INTO journeys (user_id, title, description) VALUES ($1, $2, $3)
-		 RETURNING `+journeyColumns, p.UserID, p.Title, p.Description), "create journey")
+		`INSERT INTO journeys (user_id, title, description, visibility) VALUES ($1, $2, $3, $4)
+		 RETURNING `+journeyColumns, p.UserID, p.Title, p.Description, p.Visibility), "create journey")
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +99,41 @@ func (r *Repository) ListByUser(ctx context.Context, userID string) ([]*Journey,
 	return out, rows.Err()
 }
 
+// ListVisibleByUser returns ownerID's journeys that callerID is allowed to see,
+// newest first. callerID is nil for an anonymous viewer. Visibility rules:
+// owner sees all; public is always listed; followers is listed only when the
+// caller follows the owner; only_me is never listed (except to the owner).
+func (r *Repository) ListVisibleByUser(ctx context.Context, ownerID string, callerID *string) ([]*Journey, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT `+journeyColumns+` FROM journeys j
+		 WHERE j.user_id = $1 AND j.deleted_at IS NULL
+		   AND (
+		     ($2::uuid IS NOT NULL AND $2::uuid = j.user_id)
+		     OR j.visibility = 'public'
+		     OR (
+		       j.visibility = 'followers' AND $2::uuid IS NOT NULL
+		       AND EXISTS (
+		         SELECT 1 FROM follows f
+		          WHERE f.follower_id = $2::uuid AND f.followee_id = j.user_id
+		       )
+		     )
+		   )
+		 ORDER BY j.created_at DESC`, ownerID, callerID)
+	if err != nil {
+		return nil, fmt.Errorf("list visible journeys: %w", err)
+	}
+	defer rows.Close()
+	var out []*Journey
+	for rows.Next() {
+		j, err := scanJourney(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan journey: %w", err)
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
 // GetByID returns a journey by id.
 func (r *Repository) GetByID(ctx context.Context, id string) (*Journey, error) {
 	return getJourney(r.db.QueryRow(ctx,
@@ -106,13 +141,13 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Journey, error) {
 		"get journey")
 }
 
-// Update sets title/description (COALESCE) for an owned journey.
-func (r *Repository) Update(ctx context.Context, id, userID string, title, description *string) (*Journey, error) {
+// Update sets title/description/visibility (COALESCE) for an owned journey.
+func (r *Repository) Update(ctx context.Context, id, userID string, title, description, visibility *string) (*Journey, error) {
 	return getJourney(r.db.QueryRow(ctx,
 		`UPDATE journeys SET title = COALESCE($3, title), description = COALESCE($4, description),
-		   updated_at = NOW()
+		   visibility = COALESCE($5, visibility), updated_at = NOW()
 		 WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
-		 RETURNING `+journeyColumns, id, userID, title, description), "update journey")
+		 RETURNING `+journeyColumns, id, userID, title, description, visibility), "update journey")
 }
 
 // SetActive activates or ends a journey. Multiple journeys can be active at once
@@ -325,15 +360,23 @@ func (r *Repository) BelongsToUser(ctx context.Context, userID, journeyID string
 
 // AssignCheckpoint attaches a checkpoint to a journey, both owned by userID.
 func (r *Repository) AssignCheckpoint(ctx context.Context, journeyID, checkpointID, userID string) error {
-	return r.assignCheckpoints(ctx, journeyID, []string{checkpointID}, userID, true)
+	return r.assignCheckpoints(ctx, journeyID, []string{checkpointID}, userID, true, false)
 }
 
 // AssignCheckpoints attaches checkpoints to a journey in the submitted order.
 func (r *Repository) AssignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error {
-	return r.assignCheckpoints(ctx, journeyID, checkpointIDs, userID, false)
+	return r.assignCheckpoints(ctx, journeyID, checkpointIDs, userID, false, false)
 }
 
-func (r *Repository) assignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string, appendOrder bool) (err error) {
+// ReplaceCheckpoints sets the journey's membership to exactly checkpointIDs (in
+// the submitted order): every checkpoint currently on the journey is detached
+// first, then the selected ones are attached — all in one transaction. An empty
+// list clears the journey.
+func (r *Repository) ReplaceCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string) error {
+	return r.assignCheckpoints(ctx, journeyID, checkpointIDs, userID, false, true)
+}
+
+func (r *Repository) assignCheckpoints(ctx context.Context, journeyID string, checkpointIDs []string, userID string, appendOrder, replace bool) (err error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin assign checkpoints: %w", err)
@@ -349,6 +392,17 @@ func (r *Repository) assignCheckpoints(ctx context.Context, journeyID string, ch
 	}
 	if err != nil {
 		return fmt.Errorf("check journey owner: %w", err)
+	}
+
+	// Replace mode: detach everything currently on the journey first, so the set
+	// becomes exactly the submitted list.
+	if replace {
+		if _, err := tx.Exec(ctx,
+			`UPDATE checkpoints SET journey_id = NULL, journey_order = NULL, updated_at = NOW()
+			 WHERE journey_id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+			journeyID, userID); err != nil {
+			return fmt.Errorf("detach journey checkpoints: %w", err)
+		}
 	}
 
 	baseOrder := 0
@@ -423,7 +477,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 	if err := r.db.QueryRow(ctx,
 		`SELECT `+journeyColumns+`, checkpoint_count, total_xp
 		 FROM journeys WHERE id = $1 AND deleted_at IS NULL`, id).
-		Scan(&j.ID, &j.UserID, &j.Title, &j.Description, &j.IsActive,
+		Scan(&j.ID, &j.UserID, &j.Title, &j.Description, &j.IsActive, &j.Visibility,
 			&j.StartedAt, &j.EndedAt, &j.CreatedAt, &j.UpdatedAt,
 			&stats.CheckpointCount, &stats.TotalXP); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

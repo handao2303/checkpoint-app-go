@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,13 +16,12 @@ type fakeRepo struct {
 	createErr    error
 	checkpoint   *Checkpoint
 	lastUpdate   *UpdateParams
-	updateResult *Checkpoint
+	updateResult *UpdateResult
 	updateErr    error
 	listResult   []*Checkpoint
 	listLimit    int
 	listCursor   *CheckpointCursor
 	addedKeys    []ImageKeys
-	deleteKeys   []string
 	deleteErr    error
 }
 
@@ -44,7 +42,7 @@ func (f *fakeRepo) GetByID(context.Context, string) (*Checkpoint, error) {
 	return nil, ErrNotFound
 }
 func (f *fakeRepo) GetDetail(context.Context, string) (*Detail, error) { return nil, ErrNotFound }
-func (f *fakeRepo) Update(_ context.Context, _, _ string, p UpdateParams) (*Checkpoint, error) {
+func (f *fakeRepo) Update(_ context.Context, _, _ string, p UpdateParams) (*UpdateResult, error) {
 	f.lastUpdate = &p
 	if f.updateErr != nil {
 		return nil, f.updateErr
@@ -52,7 +50,7 @@ func (f *fakeRepo) Update(_ context.Context, _, _ string, p UpdateParams) (*Chec
 	if f.updateResult != nil {
 		return f.updateResult, nil
 	}
-	return &Checkpoint{ID: "cp1", Name: p.Name, Note: p.Note, Rating: p.Rating}, nil
+	return &UpdateResult{Checkpoint: &Checkpoint{ID: "cp1", Name: p.Name, Note: p.Note, Rating: p.Rating}}, nil
 }
 func (f *fakeRepo) ListByUser(context.Context, string, string, int) ([]*Checkpoint, error) {
 	return f.listResult, nil
@@ -80,8 +78,8 @@ func (f *fakeRepo) AddImages(_ context.Context, _ string, keys []ImageKeys, _ in
 	return nil, nil
 }
 func (f *fakeRepo) CountImages(context.Context, string) (int, error) { return 0, nil }
-func (f *fakeRepo) Delete(context.Context, string, string) ([]string, error) {
-	return f.deleteKeys, f.deleteErr
+func (f *fakeRepo) Delete(context.Context, string, string) error {
+	return f.deleteErr
 }
 func (f *fakeRepo) IncrementView(context.Context, string) (int, error) { return 0, nil }
 
@@ -130,6 +128,81 @@ func TestServiceCreate_AwardsCheckinXP(t *testing.T) {
 	if res.XPAwarded != checkinXP {
 		t.Errorf("result XPAwarded = %d, want %d", res.XPAwarded, checkinXP)
 	}
+	if repo.lastCreate.RequestHash == "" {
+		t.Fatal("RequestHash is empty")
+	}
+}
+
+func TestServiceCreate_RequestHashStableForSameInput(t *testing.T) {
+	firstRepo := &fakeRepo{}
+	secondRepo := &fakeRepo{}
+	input := Input{
+		Name:     "  Cà phê  ",
+		Category: "",
+		Lat:      10.8,
+		Lng:      106.6,
+		Images:   []ImageKeys{{ObjectKey: "checkpoints/test/a.jpg", Type: MediaTypeImage}},
+	}
+
+	if _, err := NewService(firstRepo, nil, nil).Create(context.Background(), "user1", input); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if _, err := NewService(secondRepo, nil, nil).Create(context.Background(), "user1", input); err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if firstRepo.lastCreate.RequestHash == "" {
+		t.Fatal("RequestHash is empty")
+	}
+	if firstRepo.lastCreate.RequestHash != secondRepo.lastCreate.RequestHash {
+		t.Fatalf("RequestHash mismatch = %q vs %q", firstRepo.lastCreate.RequestHash, secondRepo.lastCreate.RequestHash)
+	}
+}
+
+func TestServiceCreate_RequestHashIncludesMediaKeys(t *testing.T) {
+	firstRepo := &fakeRepo{}
+	secondRepo := &fakeRepo{}
+
+	if _, err := NewService(firstRepo, nil, nil).Create(context.Background(), "user1", Input{
+		Name:   "Cà phê",
+		Lat:    10.8,
+		Lng:    106.6,
+		Images: []ImageKeys{{ObjectKey: "checkpoints/test/a.jpg", Type: MediaTypeImage}},
+	}); err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	if _, err := NewService(secondRepo, nil, nil).Create(context.Background(), "user1", Input{
+		Name:   "Cà phê",
+		Lat:    10.8,
+		Lng:    106.6,
+		Images: []ImageKeys{{ObjectKey: "checkpoints/test/b.jpg", Type: MediaTypeImage}},
+	}); err != nil {
+		t.Fatalf("second create: %v", err)
+	}
+	if firstRepo.lastCreate.RequestHash == secondRepo.lastCreate.RequestHash {
+		t.Fatalf("RequestHash should differ for different media keys: %q", firstRepo.lastCreate.RequestHash)
+	}
+}
+
+func TestServiceCreate_DuplicateResultPassesThrough(t *testing.T) {
+	repo := &fakeRepo{
+		createResult: &CreateResult{
+			Checkpoint: &Checkpoint{ID: "cp1"},
+			Duplicate:  true,
+		},
+	}
+
+	res, err := NewService(repo, nil, nil).Create(context.Background(), "user1", Input{
+		Name:   "Cà phê",
+		Lat:    10.8,
+		Lng:    106.6,
+		Images: testImages,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.Duplicate {
+		t.Fatal("Duplicate = false, want true")
+	}
 }
 
 func TestServiceUpdate_ValidatesAndNormalizesContent(t *testing.T) {
@@ -137,7 +210,7 @@ func TestServiceUpdate_ValidatesAndNormalizesContent(t *testing.T) {
 	note := "  Quán yên tĩnh  "
 	rating := int16(5)
 
-	cp, err := NewService(repo, nil, nil).Update(context.Background(), "cp1", "u1", UpdateInput{
+	result, err := NewService(repo, nil, nil).Update(context.Background(), "cp1", "u1", UpdateInput{
 		Name:   "  Cà phê chiều  ",
 		Note:   &note,
 		Rating: &rating,
@@ -145,8 +218,8 @@ func TestServiceUpdate_ValidatesAndNormalizesContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cp.Name != "Cà phê chiều" {
-		t.Fatalf("updated name = %q", cp.Name)
+	if result.Checkpoint.Name != "Cà phê chiều" {
+		t.Fatalf("updated name = %q", result.Checkpoint.Name)
 	}
 	if repo.lastUpdate == nil {
 		t.Fatal("repo.Update was not called")
@@ -159,6 +232,92 @@ func TestServiceUpdate_ValidatesAndNormalizesContent(t *testing.T) {
 	}
 	if repo.lastUpdate.Rating == nil || *repo.lastUpdate.Rating != 5 {
 		t.Fatalf("Rating = %v, want 5", repo.lastUpdate.Rating)
+	}
+}
+
+func TestServiceUpdate_NormalizesReplacementMedia(t *testing.T) {
+	repo := &fakeRepo{}
+	thumb := "checkpoints/upload/thumbnails/a.jpg"
+	images := []UpdateMediaInput{
+		{ID: "img1", Type: MediaTypeImage},
+		{ObjectKey: "checkpoints/upload/a.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+		{ObjectKey: "checkpoints/upload/b.mp4", Type: MediaTypeVideo},
+	}
+
+	_, err := NewService(repo, nil, nil).Update(context.Background(), "cp1", "u1", UpdateInput{
+		Name:   "Checkpoint",
+		Images: &images,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.lastUpdate == nil || !repo.lastUpdate.ReplaceMedia {
+		t.Fatal("repo.Update should receive ReplaceMedia")
+	}
+	if len(repo.lastUpdate.Media) != 3 {
+		t.Fatalf("media length = %d, want 3", len(repo.lastUpdate.Media))
+	}
+	if repo.lastUpdate.Media[1].ObjectKey != "checkpoints/upload/a.jpg" {
+		t.Fatalf("new image key = %q", repo.lastUpdate.Media[1].ObjectKey)
+	}
+	if repo.lastUpdate.Media[2].Type != MediaTypeVideo {
+		t.Fatalf("new video type = %q", repo.lastUpdate.Media[2].Type)
+	}
+}
+
+func TestServiceUpdate_MediaValidation(t *testing.T) {
+	thumb := "checkpoints/upload/thumb.jpg"
+	tests := []struct {
+		name   string
+		images []UpdateMediaInput
+	}{
+		{
+			name:   "empty media list",
+			images: []UpdateMediaInput{},
+		},
+		{
+			name: "too many images",
+			images: []UpdateMediaInput{
+				{ObjectKey: "checkpoints/upload/a.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+				{ObjectKey: "checkpoints/upload/b.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+				{ObjectKey: "checkpoints/upload/c.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+				{ObjectKey: "checkpoints/upload/d.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+			},
+		},
+		{
+			name: "too many videos",
+			images: []UpdateMediaInput{
+				{ObjectKey: "checkpoints/upload/a.mp4", Type: MediaTypeVideo},
+				{ObjectKey: "checkpoints/upload/b.mp4", Type: MediaTypeVideo},
+			},
+		},
+		{
+			name: "ambiguous existing and new media",
+			images: []UpdateMediaInput{
+				{ID: "img1", ObjectKey: "checkpoints/upload/a.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+			},
+		},
+		{
+			name: "new media outside checkpoint namespace",
+			images: []UpdateMediaInput{
+				{ObjectKey: "avatars/a.jpg", ThumbnailKey: &thumb, Type: MediaTypeImage},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			_, err := NewService(repo, nil, nil).Update(context.Background(), "cp1", "u1", UpdateInput{
+				Name:   "Checkpoint",
+				Images: &tt.images,
+			})
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("expected ErrInvalidInput, got %v", err)
+			}
+			if repo.lastUpdate != nil {
+				t.Fatal("repo.Update should not be called on invalid media")
+			}
+		})
 	}
 }
 
@@ -336,6 +495,24 @@ func TestServiceCreate_Validation(t *testing.T) {
 		{"lat too high", Input{Name: "x", Lat: 91, Lng: 106}},
 		{"lng too low", Input{Name: "x", Lat: 10, Lng: -181}},
 		{"rating out of range", Input{Name: "x", Lat: 10, Lng: 106, Rating: ratingPtr(6)}},
+		{"duplicate object key", Input{
+			Name: "x",
+			Lat:  10,
+			Lng:  106,
+			Images: []ImageKeys{
+				{ObjectKey: "checkpoints/test/a.jpg", Type: MediaTypeImage},
+				{ObjectKey: "checkpoints/test/a.jpg", Type: MediaTypeImage},
+			},
+		}},
+		{"duplicate thumbnail key", Input{
+			Name: "x",
+			Lat:  10,
+			Lng:  106,
+			Images: []ImageKeys{
+				{ObjectKey: "checkpoints/test/a.jpg", ThumbnailKey: stringPtr("checkpoints/test/thumbnails/a.jpg"), Type: MediaTypeImage},
+				{ObjectKey: "checkpoints/test/b.jpg", ThumbnailKey: stringPtr("checkpoints/test/thumbnails/a.jpg"), Type: MediaTypeImage},
+			},
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -429,18 +606,34 @@ func TestServiceCreate_RejectsMediaLimitsAndTypes(t *testing.T) {
 
 func TestServicePrepareSlots_MediaExtensions(t *testing.T) {
 	svc := NewService(nil, &fakeStorage{}, nil)
-	slots, err := svc.PrepareSlots(context.Background(), "u", 2, []string{MediaTypeImage, MediaTypeVideo})
+	slots, err := svc.PrepareSlots(
+		context.Background(),
+		"u",
+		4,
+		[]string{MediaTypeImage, MediaTypeImage, MediaTypeImage, MediaTypeVideo},
+	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.HasSuffix(slots[0].ObjectKey, ".jpg") {
 		t.Fatalf("image key = %q, want .jpg", slots[0].ObjectKey)
 	}
-	if !strings.HasSuffix(slots[1].ObjectKey, ".mp4") {
-		t.Fatalf("video key = %q, want .mp4", slots[1].ObjectKey)
+	if !strings.HasSuffix(slots[3].ObjectKey, ".mp4") {
+		t.Fatalf("video key = %q, want .mp4", slots[3].ObjectKey)
 	}
-	if !strings.HasSuffix(slots[1].ThumbnailKey, ".jpg") {
-		t.Fatalf("thumbnail key = %q, want .jpg", slots[1].ThumbnailKey)
+	seen := map[string]bool{}
+	for _, slot := range slots {
+		if seen[slot.ObjectKey] {
+			t.Fatalf("duplicate object key %q", slot.ObjectKey)
+		}
+		seen[slot.ObjectKey] = true
+		if seen[slot.ThumbnailKey] {
+			t.Fatalf("duplicate thumbnail key %q", slot.ThumbnailKey)
+		}
+		seen[slot.ThumbnailKey] = true
+		if !strings.HasSuffix(slot.ThumbnailKey, ".jpg") {
+			t.Fatalf("thumbnail key = %q, want .jpg", slot.ThumbnailKey)
+		}
 	}
 }
 
@@ -489,22 +682,16 @@ func TestServiceCreate_RejectsForeignJourney(t *testing.T) {
 	}
 }
 
-func TestServiceDelete_CleansUpStorage(t *testing.T) {
-	repo := &fakeRepo{deleteKeys: []string{
-		"checkpoints/cp1/a.jpg",
-		"https://cdn.example.com/legacy-full-url.jpg", // legacy row — must be skipped
-		"checkpoints/cp1/b.jpg",
-	}}
+func TestServiceDelete_DoesNotDeleteStorageObjects(t *testing.T) {
+	repo := &fakeRepo{}
 	storage := &fakeStorage{}
 	svc := NewService(repo, storage, nil)
 
 	if err := svc.Delete(context.Background(), "cp1", "user1"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	want := []string{"checkpoints/cp1/a.jpg", "checkpoints/cp1/b.jpg"}
-	if !slices.Equal(storage.deleted, want) {
-		t.Errorf("deleted keys = %v, want %v", storage.deleted, want)
+	if len(storage.deleted) != 0 {
+		t.Errorf("deleted keys = %v, want no storage cleanup", storage.deleted)
 	}
 }
 

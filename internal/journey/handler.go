@@ -49,6 +49,9 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.With(auth).Post("/{id}/checkpoints", h.AssignCheckpoints)
 		r.With(auth).Post("/{id}/checkpoints/{cpId}", h.AssignCheckpoint)
 	})
+	// Another user's journeys, filtered by visibility (optionalAuth so the
+	// public/anonymous case works; owners and followers see more).
+	r.With(optionalAuth).Get("/users/{id}/journeys", h.ListByUserPublic)
 }
 
 // Create makes a new journey.
@@ -57,17 +60,32 @@ func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Title       string  `json:"title"`
 		Description *string `json:"description"`
+		Visibility  string  `json:"visibility"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	j, err := h.svc.Create(r.Context(), p.UserID, req.Title, req.Description)
+	j, err := h.svc.Create(r.Context(), p.UserID, req.Title, req.Description, req.Visibility)
 	if err != nil {
 		h.writeError(w, err, "could not create journey")
 		return
 	}
 	respond.JSON(w, http.StatusCreated, j)
+}
+
+// ListByUserPublic returns another user's journeys filtered by visibility. The
+// caller (if any) sees public journeys, plus followers-only journeys when they
+// follow the owner, plus everything when they are the owner.
+func (h *Handler) ListByUserPublic(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	ownerID := chi.URLParam(r, "id")
+	list, err := h.svc.ListForViewer(r.Context(), ownerID, p.UserID)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not list journeys")
+		return
+	}
+	respond.JSON(w, http.StatusOK, map[string]any{"journeys": list})
 }
 
 // ListMine returns the caller's journeys.
@@ -173,17 +191,25 @@ func (h *Handler) AssignCheckpoint(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusNoContent, nil)
 }
 
-// AssignCheckpoints attaches checkpoints to the journey in the request order.
+// AssignCheckpoints attaches checkpoints to the journey in the request order. When
+// "replace" is true it sets the journey's membership to exactly the submitted list
+// (detaching any others) in a single transaction — used when editing a journey.
 func (h *Handler) AssignCheckpoints(w http.ResponseWriter, r *http.Request) {
 	p, _ := authctx.From(r.Context())
 	var req struct {
 		CheckpointIDs []string `json:"checkpoint_ids"`
+		Replace       bool     `json:"replace"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respond.Error(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	err := h.svc.AssignCheckpoints(r.Context(), chi.URLParam(r, "id"), req.CheckpointIDs, p.UserID)
+	var err error
+	if req.Replace {
+		err = h.svc.ReplaceCheckpoints(r.Context(), chi.URLParam(r, "id"), req.CheckpointIDs, p.UserID)
+	} else {
+		err = h.svc.AssignCheckpoints(r.Context(), chi.URLParam(r, "id"), req.CheckpointIDs, p.UserID)
+	}
 	if err != nil {
 		h.writeError(w, err, "could not assign checkpoints")
 		return

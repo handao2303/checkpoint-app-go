@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -103,6 +104,16 @@ func scanCheckpoint(row pgx.Row) (*Checkpoint, error) {
 // is locked with SELECT ... FOR UPDATE so concurrent check-ins can't lose an XP
 // increment, and the new level is computed from the locked total.
 func (r *Repository) Create(ctx context.Context, p CreateParams) (result *CreateResult, err error) {
+	if p.RequestHash != "" {
+		result, err := r.createResultByRequestHash(ctx, p.UserID, p.RequestHash, true)
+		if err == nil {
+			return result, nil
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return nil, err
+		}
+	}
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -124,11 +135,15 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	}
 
 	cp, err := scanCheckpoint(tx.QueryRow(ctx,
-		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, taken_at, xp_awarded)
-	         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		`INSERT INTO checkpoints (user_id, name, category, note, rating, lat, lng, address, province, province_code, place_id, journey_id, taken_at, xp_awarded, request_hash)
+	         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	         RETURNING `+cpColumns,
-		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.TakenAt, p.XPReward))
+		p.UserID, p.Name, p.Category, p.Note, p.Rating, p.Lat, p.Lng, p.Address, p.Province, p.ProvinceCode, placeID, p.JourneyID, p.TakenAt, p.XPReward, p.RequestHash))
 	if err != nil {
+		if isRequestHashUniqueViolation(err) && p.RequestHash != "" {
+			_ = tx.Rollback(ctx)
+			return r.createResultByRequestHash(ctx, p.UserID, p.RequestHash, true)
+		}
 		return nil, fmt.Errorf("insert checkpoint: %w", err)
 	}
 
@@ -199,6 +214,37 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		Checkpoint: cp, XPAwarded: p.XPReward, TotalXP: totalXP, Level: level, NewBadges: newBadges,
 		Images: images,
 	}, nil
+}
+
+func (r *Repository) createResultByRequestHash(ctx context.Context, userID, requestHash string, duplicate bool) (*CreateResult, error) {
+	cp, err := scanCheckpoint(r.db.QueryRow(ctx,
+		`SELECT `+cpColumns+` FROM checkpoints
+		  WHERE user_id = $1 AND request_hash = $2 AND deleted_at IS NULL
+		  ORDER BY created_at DESC
+		  LIMIT 1`,
+		userID, requestHash))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get checkpoint by request hash: %w", err)
+	}
+	images, err := r.ListImages(ctx, cp.ID)
+	if err != nil {
+		return nil, err
+	}
+	return &CreateResult{
+		Checkpoint: cp,
+		Duplicate:  duplicate,
+		Images:     images,
+	}, nil
+}
+
+func isRequestHashUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == "23505" &&
+		pgErr.ConstraintName == "idx_checkpoints_user_request_hash"
 }
 
 // updateStreakTx increments or resets the user's daily check-in streak inside the
@@ -298,6 +344,118 @@ func (r *Repository) RefreshCover(ctx context.Context, checkpointID string) erro
 	return nil
 }
 
+type mediaRow struct {
+	ID           string
+	ObjectKey    string
+	ThumbnailKey *string
+	Type         string
+}
+
+func (r *Repository) replaceMediaTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	checkpointID string,
+	items []UpdateMediaItem,
+) (bool, error) {
+	existing, err := r.mediaRowsForUpdate(ctx, tx, checkpointID)
+	if err != nil {
+		return false, err
+	}
+	existingByID := make(map[string]mediaRow, len(existing))
+	for _, row := range existing {
+		existingByID[row.ID] = row
+	}
+
+	final := make([]ImageKeys, 0, len(items))
+	hasPendingMedia := false
+	for _, item := range items {
+		if item.ID != "" {
+			row, ok := existingByID[item.ID]
+			if !ok {
+				return false, ErrNotFound
+			}
+			if row.Type != mediaTypeOrDefault(item.Type) {
+				return false, fmt.Errorf("%w: media type mismatch", ErrInvalidInput)
+			}
+			if row.ThumbnailKey == nil {
+				hasPendingMedia = true
+			}
+			final = append(final, ImageKeys{
+				ObjectKey:    row.ObjectKey,
+				ThumbnailKey: row.ThumbnailKey,
+				Type:         row.Type,
+			})
+			continue
+		}
+
+		if item.ThumbnailKey == nil {
+			hasPendingMedia = true
+		}
+		final = append(final, ImageKeys{
+			ObjectKey:    item.ObjectKey,
+			ThumbnailKey: item.ThumbnailKey,
+			Type:         mediaTypeOrDefault(item.Type),
+		})
+	}
+
+	if _, err := tx.Exec(ctx, `DELETE FROM checkpoint_images WHERE checkpoint_id = $1`, checkpointID); err != nil {
+		return false, fmt.Errorf("delete replacement media rows: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE checkpoints SET image_key = NULL, thumbnail_key = NULL WHERE id = $1`,
+		checkpointID); err != nil {
+		return false, fmt.Errorf("clear cover key: %w", err)
+	}
+	if err := insertImagesTx(ctx, tx, checkpointID, final); err != nil {
+		return false, err
+	}
+	if err := refreshCoverTx(ctx, tx, checkpointID); err != nil {
+		return false, err
+	}
+	return hasPendingMedia, nil
+}
+
+func (r *Repository) mediaRowsForUpdate(ctx context.Context, tx pgx.Tx, checkpointID string) ([]mediaRow, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT id, object_key, thumbnail_key, media_type
+		   FROM checkpoint_images
+		  WHERE checkpoint_id = $1
+		  ORDER BY sort_order, created_at
+		  FOR UPDATE`,
+		checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("list media for replacement: %w", err)
+	}
+	defer rows.Close()
+
+	out := []mediaRow{}
+	for rows.Next() {
+		var row mediaRow
+		if err := rows.Scan(&row.ID, &row.ObjectKey, &row.ThumbnailKey, &row.Type); err != nil {
+			return nil, fmt.Errorf("scan media for replacement: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate media for replacement: %w", err)
+	}
+	return out, nil
+}
+
+func refreshCoverTx(ctx context.Context, tx pgx.Tx, checkpointID string) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE checkpoints c
+		SET image_key = ci.object_key, thumbnail_key = ci.thumbnail_key
+		FROM (
+			SELECT object_key, thumbnail_key FROM checkpoint_images
+			WHERE checkpoint_id = $1 ORDER BY sort_order, created_at LIMIT 1
+		) ci
+		WHERE c.id = $1 AND ci.thumbnail_key IS NOT NULL`, checkpointID); err != nil {
+		return fmt.Errorf("refresh cover: %w", err)
+	}
+	return nil
+}
+
 // GetByID returns a checkpoint by id.
 func (r *Repository) GetByID(ctx context.Context, id string) (*Checkpoint, error) {
 	c, err := scanCheckpoint(r.db.QueryRow(ctx,
@@ -312,8 +470,14 @@ func (r *Repository) GetByID(ctx context.Context, id string) (*Checkpoint, error
 }
 
 // Update edits content fields for a checkpoint owned by userID.
-func (r *Repository) Update(ctx context.Context, id, userID string, p UpdateParams) (*Checkpoint, error) {
-	c, err := scanCheckpoint(r.db.QueryRow(ctx,
+func (r *Repository) Update(ctx context.Context, id, userID string, p UpdateParams) (*UpdateResult, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin update checkpoint: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	c, err := scanCheckpoint(tx.QueryRow(ctx,
 		`UPDATE checkpoints
 		    SET name = $3, note = $4, rating = $5, updated_at = NOW()
 		  WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL
@@ -325,7 +489,20 @@ func (r *Repository) Update(ctx context.Context, id, userID string, p UpdatePara
 	if err != nil {
 		return nil, fmt.Errorf("update checkpoint: %w", err)
 	}
-	return c, nil
+
+	result := &UpdateResult{Checkpoint: c}
+	if p.ReplaceMedia {
+		hasPendingMedia, err := r.replaceMediaTx(ctx, tx, id, p.Media)
+		if err != nil {
+			return nil, err
+		}
+		result.HasPendingMedia = hasPendingMedia
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit update checkpoint: %w", err)
+	}
+	return result, nil
 }
 
 // ListByUser returns a user's checkpoints (newest first) with cover image URLs.
@@ -663,38 +840,13 @@ func (r *Repository) CountImages(ctx context.Context, checkpointID string) (int,
 
 // Delete HARD-deletes a checkpoint owned by userID, atomically reversing its
 // side effects: XP/level (negative xp_event), checkpoint_count, the place's
-// checkin_count — and the place itself if it becomes orphaned. Returns the R2
-// image keys for post-commit cleanup, or ErrNotFound if the checkpoint doesn't
-// exist or belongs to someone else.
-func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys []string, err error) {
+// checkin_count — and the place itself if it becomes orphaned.
+func (r *Repository) Delete(ctx context.Context, id, userID string) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
+		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-
-	// Collect image keys before the row (and its ON DELETE CASCADE) disappear.
-	rows, err := tx.Query(ctx,
-		`SELECT object_key, thumbnail_key FROM checkpoint_images WHERE checkpoint_id = $1`, id)
-	if err != nil {
-		return nil, fmt.Errorf("list image keys: %w", err)
-	}
-	for rows.Next() {
-		var key string
-		var thumbnailKey *string
-		if err := rows.Scan(&key, &thumbnailKey); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan image key: %w", err)
-		}
-		imageKeys = append(imageKeys, key)
-		if thumbnailKey != nil {
-			imageKeys = append(imageKeys, *thumbnailKey)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate image keys: %w", err)
-	}
 
 	// Atomically delete and return the side-effect values in one statement —
 	// no SELECT FOR UPDATE needed. A concurrent delete of the same row blocks
@@ -707,20 +859,20 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 		 RETURNING place_id, xp_awarded, journey_id`,
 		id, userID).Scan(&placeID, &xpAwarded, &journeyID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
+		return ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("delete checkpoint: %w", err)
+		return fmt.Errorf("delete checkpoint: %w", err)
 	}
 
 	// Reverse the XP award and the checkpoint counter.
 	if _, _, err := r.xp.AwardXPTx(ctx, tx, userID, -xpAwarded, "checkin_deleted", id); err != nil {
-		return nil, fmt.Errorf("reverse xp: %w", err)
+		return fmt.Errorf("reverse xp: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE users SET checkpoint_count = GREATEST(checkpoint_count - 1, 0), updated_at = NOW()
 		 WHERE id = $1`, userID); err != nil {
-		return nil, fmt.Errorf("drop checkpoint_count: %w", err)
+		return fmt.Errorf("drop checkpoint_count: %w", err)
 	}
 
 	if journeyID != nil {
@@ -728,7 +880,7 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 			`UPDATE journeys SET checkpoint_count = GREATEST(checkpoint_count - 1, 0),
 			                     total_xp = GREATEST(total_xp - $2, 0)
 			 WHERE id = $1`, journeyID, xpAwarded); err != nil {
-			return nil, fmt.Errorf("decrement journey stats: %w", err)
+			return fmt.Errorf("decrement journey stats: %w", err)
 		}
 	}
 
@@ -738,20 +890,20 @@ func (r *Repository) Delete(ctx context.Context, id, userID string) (imageKeys [
 		if _, err := tx.Exec(ctx,
 			`UPDATE places SET checkin_count = GREATEST(checkin_count - 1, 0), updated_at = NOW()
 			 WHERE id = $1`, placeID); err != nil {
-			return nil, fmt.Errorf("drop place checkin_count: %w", err)
+			return fmt.Errorf("drop place checkin_count: %w", err)
 		}
 		if _, err := tx.Exec(ctx,
 			`DELETE FROM places p WHERE p.id = $1
 			 AND NOT EXISTS (SELECT 1 FROM checkpoints c WHERE c.place_id = p.id)`,
 			placeID); err != nil {
-			return nil, fmt.Errorf("delete orphaned place: %w", err)
+			return fmt.Errorf("delete orphaned place: %w", err)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit delete: %w", err)
+		return fmt.Errorf("commit delete: %w", err)
 	}
-	return imageKeys, nil
+	return nil
 }
 
 // IncrementView bumps a checkpoint's view count and returns the new total.
