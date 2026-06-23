@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -40,6 +41,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		// Static /following must precede /{username} so it isn't read as a username.
 		r.With(auth).Get("/following", h.GetFollowing)
 		r.With(optionalAuth).Get("/by-ids", h.GetByIDs)
+		r.With(optionalAuth).Get("/search", h.SearchUsers) // @-mention picker
 		// Public profile (shared) — optional auth. {id} accepts a user id
 		// (preferred, stable) or a username (legacy links).
 		r.With(optionalAuth).Get("/{id}/followers", h.GetFollowers)
@@ -252,6 +254,18 @@ func (h *Handler) GetFollowingUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := h.svc.GetFollowingUsers(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		respond.Error(w, http.StatusNotFound, "user not found")
+		return
+	}
+	respond.JSON(w, http.StatusOK, users)
+}
+
+// SearchUsers returns up to a handful of users matching ?q= for the @-mention
+// picker. A blank query yields an empty list.
+func (h *Handler) SearchUsers(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	users, err := h.svc.SearchUsers(r.Context(), r.URL.Query().Get("q"), limit)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not search users")
 		return
 	}
 	respond.JSON(w, http.StatusOK, users)

@@ -153,6 +153,24 @@ func (r *Repository) GetFollowingUsers(ctx context.Context, userID string) ([]Pu
 	return r.scanPublicUserSummaries(rows, "following")
 }
 
+// SearchUsers returns active users whose username or display name starts with
+// the prefix (case-insensitive), for the @-mention picker. Username matches rank
+// first, then display name, then alphabetically.
+func (r *Repository) SearchUsers(ctx context.Context, prefix string, limit int) ([]PublicUserSummary, error) {
+	pattern := "%" + prefix + "%"
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id, u.username, u.display_name, u.avatar_key
+		FROM users u
+		WHERE u.deleted_at IS NULL
+		  AND (u.username ILIKE $1 OR u.display_name ILIKE $1)
+		ORDER BY (u.username ILIKE $1) DESC, u.username ASC
+		LIMIT $2`, pattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("search users: %w", err)
+	}
+	return r.scanPublicUserSummaries(rows, "search")
+}
+
 // GetBySupabaseID returns the active user linked to a Supabase account.
 func (r *Repository) GetBySupabaseID(ctx context.Context, supabaseID string) (*User, error) {
 	row := r.db.QueryRow(ctx,

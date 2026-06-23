@@ -86,6 +86,9 @@ func (f *fakeIdentityRepo) GetFollowingUsers(_ context.Context, userID string) (
 	f.followingUserID = userID
 	return f.followingUsers, nil
 }
+func (f *fakeIdentityRepo) SearchUsers(context.Context, string, int) ([]PublicUserSummary, error) {
+	return nil, nil
+}
 
 func TestServiceGetFollowersResolvesUsername(t *testing.T) {
 	target := &User{ID: "11111111-1111-1111-1111-111111111111", Username: "target"}

@@ -53,6 +53,7 @@ type repository interface {
 	GetFolloweeIDs(ctx context.Context, followerID string) ([]string, error)
 	GetFollowers(ctx context.Context, userID string) ([]PublicUserSummary, error)
 	GetFollowingUsers(ctx context.Context, userID string) ([]PublicUserSummary, error)
+	SearchUsers(ctx context.Context, prefix string, limit int) ([]PublicUserSummary, error)
 }
 
 // supabaseVerifier verifies Supabase tokens during /auth/exchange.
@@ -237,6 +238,19 @@ func (s *Service) GetFollowingUsers(ctx context.Context, ref string) ([]PublicUs
 		return nil, err
 	}
 	return s.repo.GetFollowingUsers(ctx, user.ID)
+}
+
+// SearchUsers returns up to `limit` users matching the prefix, for the @-mention
+// picker. A blank query returns no results; limit is clamped to [1, 10].
+func (s *Service) SearchUsers(ctx context.Context, query string, limit int) ([]PublicUserSummary, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []PublicUserSummary{}, nil
+	}
+	if limit <= 0 || limit > 10 {
+		limit = 8
+	}
+	return s.repo.SearchUsers(ctx, query, limit)
 }
 
 // UpdateProfile updates the caller's display name, bio and/or username. A
