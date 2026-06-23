@@ -423,6 +423,40 @@ func (r *Repository) ListInBounds(ctx context.Context, minLng, minLat, maxLng, m
 	return r.collectCheckpoints(rows)
 }
 
+// ListGlobal returns the newest checkpoints for world-level map views without a
+// bbox. The same category/ownership filters apply.
+func (r *Repository) ListGlobal(ctx context.Context, limit int, f BoundsFilter) ([]*Checkpoint, error) {
+	args := []any{}
+	where := []string{"deleted_at IS NULL"}
+	if f.Category != "" && f.Category != "all" {
+		args = append(args, f.Category)
+		where = append(where, fmt.Sprintf("category = $%d", len(args)))
+	}
+	switch f.Mode {
+	case "mine":
+		if f.ViewerID == nil {
+			return []*Checkpoint{}, nil
+		}
+		args = append(args, *f.ViewerID)
+		where = append(where, fmt.Sprintf("user_id = $%d", len(args)))
+	case "following":
+		if f.ViewerID == nil {
+			return []*Checkpoint{}, nil
+		}
+		args = append(args, *f.ViewerID)
+		where = append(where, fmt.Sprintf("user_id IN (SELECT followee_id FROM follows WHERE follower_id = $%d)", len(args)))
+	}
+	args = append(args, limit)
+	query := `SELECT ` + cpListColumns + ` FROM checkpoints WHERE ` +
+		strings.Join(where, " AND ") +
+		fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d", len(args))
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list global checkpoints: %w", err)
+	}
+	return r.collectCheckpoints(rows)
+}
+
 // ListNearby returns checkpoints within radiusM metres of (lng, lat), nearest
 // first (ST_DWithin + KNN ordering, both index-backed).
 func (r *Repository) ListNearby(ctx context.Context, lng, lat float64, radiusM float64, limit int) ([]*Checkpoint, error) {

@@ -20,6 +20,7 @@ type fakeRepo struct {
 	updateResult *Checkpoint
 	updateErr    error
 	listResult   []*Checkpoint
+	listLimit    int
 	listCursor   *CheckpointCursor
 	addedKeys    []ImageKeys
 	deleteKeys   []string
@@ -63,7 +64,12 @@ func (f *fakeRepo) ListByUserPage(_ context.Context, _ string, _ string, _ int, 
 func (f *fakeRepo) ListUnassignedByUser(context.Context, string, int, *CheckpointCursor) ([]*Checkpoint, error) {
 	return nil, nil
 }
-func (f *fakeRepo) ListInBounds(context.Context, float64, float64, float64, float64, int, BoundsFilter) ([]*Checkpoint, error) {
+func (f *fakeRepo) ListGlobal(_ context.Context, limit int, _ BoundsFilter) ([]*Checkpoint, error) {
+	f.listLimit = limit
+	return f.listResult, nil
+}
+func (f *fakeRepo) ListInBounds(_ context.Context, _ float64, _ float64, _ float64, _ float64, limit int, _ BoundsFilter) ([]*Checkpoint, error) {
+	f.listLimit = limit
 	return nil, nil
 }
 func (f *fakeRepo) ListNearby(context.Context, float64, float64, float64, int) ([]*Checkpoint, error) {
@@ -202,6 +208,48 @@ func TestServiceListMine_PaginatesWithCursor(t *testing.T) {
 	}
 	if page.NextCursor == nil || *page.NextCursor != t2.Format(time.RFC3339Nano)+"|cp2" {
 		t.Fatalf("next cursor = %v, want cp2 cursor", page.NextCursor)
+	}
+}
+
+func TestServiceListGlobal_ClampsLimit(t *testing.T) {
+	repo := &fakeRepo{}
+	if _, err := NewService(repo, nil, nil).ListGlobal(context.Background(), 9999, BoundsFilter{}); err != nil {
+		t.Fatalf("ListGlobal() error = %v", err)
+	}
+	if repo.listLimit != maxMapLimit {
+		t.Fatalf("limit = %d, want %d", repo.listLimit, maxMapLimit)
+	}
+}
+
+func TestServiceListInBounds_RejectsOutOfRangeBBox(t *testing.T) {
+	tests := []struct {
+		name                           string
+		minLng, minLat, maxLng, maxLat float64
+	}{
+		{"longitude below min", -181, -10, 10, 10},
+		{"longitude above max", -10, -10, 181, 10},
+		{"latitude below min", -10, -91, 10, 10},
+		{"latitude above max", -10, -10, 10, 91},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &fakeRepo{}
+			_, err := NewService(repo, nil, nil).ListInBounds(
+				context.Background(),
+				tt.minLng,
+				tt.minLat,
+				tt.maxLng,
+				tt.maxLat,
+				300,
+				BoundsFilter{},
+			)
+			if !errors.Is(err, ErrInvalidInput) {
+				t.Fatalf("err = %v, want ErrInvalidInput", err)
+			}
+			if repo.listLimit != 0 {
+				t.Fatal("repo.ListInBounds should not be called")
+			}
+		})
 	}
 }
 

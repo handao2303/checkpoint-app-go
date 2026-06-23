@@ -44,6 +44,7 @@ type repository interface {
 	ListByUser(ctx context.Context, userID string, provinceCode string, limit int) ([]*Checkpoint, error)
 	ListByUserPage(ctx context.Context, userID string, provinceCode string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
 	ListUnassignedByUser(ctx context.Context, userID string, limit int, cursor *CheckpointCursor) ([]*Checkpoint, error)
+	ListGlobal(ctx context.Context, limit int, f BoundsFilter) ([]*Checkpoint, error)
 	ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int, f BoundsFilter) ([]*Checkpoint, error)
 	ListNearby(ctx context.Context, lng, lat, radiusM float64, limit int) ([]*Checkpoint, error)
 	AddImages(ctx context.Context, checkpointID string, keys []ImageKeys, startOrder int) ([]Image, error)
@@ -230,11 +231,26 @@ type BoundsFilter struct {
 	ViewerID *string
 }
 
+// ListGlobal returns the newest checkpoints for a fully zoomed-out map where a
+// raw wrapped bbox may span past normal longitude limits.
+func (s *Service) ListGlobal(ctx context.Context, limit int, f BoundsFilter) ([]*Checkpoint, error) {
+	if limit <= 0 || limit > maxMapLimit {
+		limit = maxMapLimit
+	}
+	return s.repo.ListGlobal(ctx, limit, f)
+}
+
 // ListInBounds returns checkpoints inside a map viewport bounding box, narrowed
 // by the optional filter.
 func (s *Service) ListInBounds(ctx context.Context, minLng, minLat, maxLng, maxLat float64, limit int, f BoundsFilter) ([]*Checkpoint, error) {
 	if minLng > maxLng || minLat > maxLat {
 		return nil, fmt.Errorf("%w: bbox min must be <= max", ErrInvalidInput)
+	}
+	if minLat < -90 || maxLat > 90 {
+		return nil, fmt.Errorf("%w: bbox latitude out of range", ErrInvalidInput)
+	}
+	if minLng < -180 || maxLng > 180 {
+		return nil, fmt.Errorf("%w: bbox longitude out of range", ErrInvalidInput)
 	}
 	if limit <= 0 || limit > maxMapLimit {
 		limit = maxMapLimit

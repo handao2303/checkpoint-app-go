@@ -86,8 +86,8 @@ func (h *Handler) WithCloudSyncer(s *cloudsync.Syncer) *Handler {
 func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) http.Handler, checkinRL, uploadSlotsRL func(http.Handler) http.Handler) {
 	r.Route("/checkpoints", func(r chi.Router) {
 		// Public (optional auth) — shared checkpoint pages.
-		r.With(optionalAuth).Get("/by-user", h.ListByUser)   // ?user_id={id} — profile gallery
-		r.With(optionalAuth).Get("/", h.ListInBounds)        // ?bbox=minLng,minLat,maxLng,maxLat (map) — public so anonymous can browse the map
+		r.With(optionalAuth).Get("/by-user", h.ListByUser) // ?user_id={id} — profile gallery
+		r.With(optionalAuth).Get("/", h.ListInBounds)      // ?bbox=minLng,minLat,maxLng,maxLat (map) — public so anonymous can browse the map
 		r.With(optionalAuth).Get("/{id}", h.Get)
 		r.With(optionalAuth).Post("/{id}/view", h.View)
 
@@ -311,18 +311,9 @@ func (h *Handler) ListByUser(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
 }
 
-// ListInBounds returns checkpoints inside a map viewport (?bbox=...).
+// ListInBounds returns checkpoints for the map. With ?bbox=... it uses the
+// viewport; without bbox it returns a global latest list for world-level zoom.
 func (h *Handler) ListInBounds(w http.ResponseWriter, r *http.Request) {
-	parts := strings.Split(r.URL.Query().Get("bbox"), ",")
-	if len(parts) != 4 {
-		respond.Error(w, http.StatusBadRequest, "bbox must be minLng,minLat,maxLng,maxLat")
-		return
-	}
-	b, ok := parseFloats(parts)
-	if !ok {
-		respond.Error(w, http.StatusBadRequest, "bbox must be 4 numbers")
-		return
-	}
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	var viewerID *string
@@ -334,10 +325,32 @@ func (h *Handler) ListInBounds(w http.ResponseWriter, r *http.Request) {
 		Mode:     q.Get("filter"),
 		ViewerID: viewerID,
 	}
-	list, err := h.svc.ListInBounds(r.Context(), b[0], b[1], b[2], b[3], limit, filter)
+	var (
+		list []*Checkpoint
+		err  error
+	)
+	bbox := q.Get("bbox")
+	if bbox == "" {
+		list, err = h.svc.ListGlobal(r.Context(), limit, filter)
+	} else {
+		parts := strings.Split(bbox, ",")
+		if len(parts) != 4 {
+			respond.Error(w, http.StatusBadRequest, "bbox must be minLng,minLat,maxLng,maxLat")
+			return
+		}
+		b, ok := parseFloats(parts)
+		if !ok {
+			respond.Error(w, http.StatusBadRequest, "bbox must be 4 numbers")
+			return
+		}
+		list, err = h.svc.ListInBounds(r.Context(), b[0], b[1], b[2], b[3], limit, filter)
+	}
 	if err != nil {
 		h.listError(w, err)
 		return
+	}
+	if list == nil {
+		list = []*Checkpoint{}
 	}
 	respond.JSON(w, http.StatusOK, map[string]any{"checkpoints": list})
 }
