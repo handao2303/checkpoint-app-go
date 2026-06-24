@@ -26,6 +26,7 @@ func (h *Handler) Register(r chi.Router, auth, optionalAuth func(http.Handler) h
 		r.Use(auth)
 		r.Get("/me/passport", h.Passport)
 		r.Get("/me/badges", h.Badges)
+		r.Post("/me/badges/claim-unsent", h.ClaimUnsentBadges)
 	})
 	// Leaderboard is public; the caller's rank ("Me") is only included when signed in.
 	r.With(optionalAuth).Get("/leaderboard", h.Leaderboard)
@@ -49,6 +50,18 @@ func (h *Handler) Badges(w http.ResponseWriter, r *http.Request) {
 	badges, err := h.svc.Badges(r.Context(), p.UserID)
 	if err != nil {
 		respond.Error(w, http.StatusInternalServerError, "could not load badges")
+		return
+	}
+	respond.JSON(w, http.StatusOK, badges)
+}
+
+// ClaimUnsentBadges returns newly eligible badges that have not been shown yet,
+// then marks them as sent.
+func (h *Handler) ClaimUnsentBadges(w http.ResponseWriter, r *http.Request) {
+	p, _ := authctx.From(r.Context())
+	badges, err := h.svc.ClaimUnsentBadges(r.Context(), p.UserID)
+	if err != nil {
+		respond.Error(w, http.StatusInternalServerError, "could not claim unsent badges")
 		return
 	}
 	respond.JSON(w, http.StatusOK, badges)

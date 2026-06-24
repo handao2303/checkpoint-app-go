@@ -38,6 +38,10 @@ func (f *fakeLeaderboardReader) Badges(context.Context, string) ([]UserBadge, er
 	return nil, errors.New("not implemented")
 }
 
+func (f *fakeLeaderboardReader) ClaimUnsentBadges(context.Context, string) ([]Badge, error) {
+	return nil, errors.New("not implemented")
+}
+
 func (f *fakeLeaderboardReader) UserIDByUsername(context.Context, string) (string, error) {
 	return "mock-user-id", nil
 }

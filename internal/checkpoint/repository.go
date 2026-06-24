@@ -126,7 +126,7 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 	placeID := p.PlaceID
 	if placeID == nil {
 		id, err := r.places.ResolveInTx(ctx, tx, place.ResolveParams{
-			Name: p.Name, Category: p.Category, Lat: p.Lat, Lng: p.Lng, Address: p.Address,
+			Name: p.Name, Category: p.Category, Lat: p.Lat, Lng: p.Lng, Address: p.Address, CreatedBy: p.UserID,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("resolve place: %w", err)
@@ -167,7 +167,11 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 		return nil, fmt.Errorf("bump checkpoint_count: %w", err)
 	}
 
-	// Evaluate achievements now that counts/province are up to date.
+	if err := insertImagesTx(ctx, tx, cp.ID, p.Images); err != nil {
+		return nil, fmt.Errorf("insert images: %w", err)
+	}
+
+	// Evaluate achievements now that counts, province, and media are up to date.
 	newBadges, err := r.xp.EvaluateBadgesTx(ctx, tx, p.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("evaluate badges: %w", err)
@@ -175,10 +179,6 @@ func (r *Repository) Create(ctx context.Context, p CreateParams) (result *Create
 
 	if err := updateStreakTx(ctx, tx, p.UserID); err != nil {
 		return nil, fmt.Errorf("update streak: %w", err)
-	}
-
-	if err := insertImagesTx(ctx, tx, cp.ID, p.Images); err != nil {
-		return nil, fmt.Errorf("insert images: %w", err)
 	}
 
 	if p.JourneyID != nil {

@@ -23,6 +23,7 @@ type reader interface {
 	TopByXP(ctx context.Context, limit int) ([]LeaderboardEntry, error)
 	RankOf(ctx context.Context, userID string) (*LeaderboardEntry, error)
 	Badges(ctx context.Context, userID string) ([]UserBadge, error)
+	ClaimUnsentBadges(ctx context.Context, userID string) ([]Badge, error)
 	UserIDByUsername(ctx context.Context, username string) (string, error)
 }
 
@@ -65,6 +66,12 @@ func (s *Service) PassportByRef(ctx context.Context, ref string) (*Passport, err
 // Badges returns the badge catalog annotated with the user's unlock state.
 func (s *Service) Badges(ctx context.Context, userID string) ([]UserBadge, error) {
 	return s.repo.Badges(ctx, userID)
+}
+
+// ClaimUnsentBadges returns badges that should be shown to the user and marks
+// them as sent.
+func (s *Service) ClaimUnsentBadges(ctx context.Context, userID string) ([]Badge, error) {
+	return s.repo.ClaimUnsentBadges(ctx, userID)
 }
 
 // Leaderboard returns the global top users (cached + single-flighted, since the

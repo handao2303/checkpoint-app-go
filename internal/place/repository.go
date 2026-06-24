@@ -161,9 +161,9 @@ func (r *Repository) ResolveInTx(ctx context.Context, tx pgx.Tx, p ResolveParams
 	}
 
 	if err := tx.QueryRow(ctx,
-		`INSERT INTO places (name, category, lat, lng, address)
-		 VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-		p.Name, p.Category, p.Lat, p.Lng, p.Address).Scan(&id); err != nil {
+		`INSERT INTO places (name, category, lat, lng, address, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+		p.Name, p.Category, p.Lat, p.Lng, p.Address, p.CreatedBy).Scan(&id); err != nil {
 		return "", fmt.Errorf("create place: %w", err)
 	}
 	return id, nil

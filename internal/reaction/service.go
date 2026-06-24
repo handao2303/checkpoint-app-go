@@ -21,6 +21,9 @@ func (s *Service) Set(ctx context.Context, checkpointID, userID, reaction string
 	if err := s.repo.Set(ctx, checkpointID, userID, reaction); err != nil {
 		return nil, err
 	}
+	if err := s.repo.AwardSocialScoutIfEligible(ctx, checkpointID, userID); err != nil {
+		return nil, err
+	}
 	return s.repo.Summary(ctx, checkpointID, userID)
 }
 

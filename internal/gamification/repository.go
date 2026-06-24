@@ -211,30 +211,67 @@ func (r *Repository) TopByXP(ctx context.Context, limit int) ([]LeaderboardEntry
 // awards any newly-satisfied badges (idempotently). Returns the badges awarded
 // by THIS call (with display metadata), so the caller can surface them.
 func (r *Repository) EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID string) ([]Badge, error) {
+	s, err := loadBadgeStats(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return insertBadgeKeys(ctx, tx, userID, satisfiedBadges(s), true)
+}
+
+type badgeStatsQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func loadBadgeStats(ctx context.Context, q badgeStatsQuerier, userID string) (badgeStats, error) {
 	var s badgeStats
-	if err := tx.QueryRow(ctx,
+	if err := q.QueryRow(ctx,
 		`SELECT
 	           u.checkpoint_count,
 	           u.journey_count,
 	           (SELECT COUNT(DISTINCT COALESCE(province_code, province)) FROM checkpoints c
 	             WHERE c.user_id = u.id AND c.deleted_at IS NULL AND (c.province IS NOT NULL OR c.province_code IS NOT NULL)),
-	           EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int
+	           EXTRACT(HOUR FROM (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh'))::int,
+	           (SELECT COUNT(*) FROM checkpoints c
+	             WHERE c.user_id = u.id AND c.deleted_at IS NULL AND c.category = 'cafe'),
+	           (SELECT COUNT(*) FROM checkpoint_reactions cr
+	              JOIN checkpoints c ON c.id = cr.checkpoint_id
+	             WHERE c.user_id = u.id AND c.deleted_at IS NULL AND cr.user_id <> u.id),
+	           (SELECT COUNT(DISTINCT to_char(c.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh', 'IYYY-IW')) FROM checkpoints c
+	             WHERE c.user_id = u.id AND c.deleted_at IS NULL
+	               AND EXTRACT(ISODOW FROM (c.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')) IN (6, 7)),
+	           (SELECT COUNT(*) FROM checkpoint_images ci
+	              JOIN checkpoints c ON c.id = ci.checkpoint_id
+	             WHERE c.user_id = u.id AND c.deleted_at IS NULL AND COALESCE(ci.media_type, 'image') = 'image'),
+	           (SELECT COUNT(*) FROM places p WHERE p.created_by = u.id)
 	         FROM users u WHERE u.id = $1`,
-		userID).Scan(&s.CheckpointCount, &s.JourneyCount, &s.ProvinceCount, &s.Hour); err != nil {
-		return nil, fmt.Errorf("load badge stats: %w", err)
+		userID).Scan(
+		&s.CheckpointCount,
+		&s.JourneyCount,
+		&s.ProvinceCount,
+		&s.Hour,
+		&s.CafeCheckpointCount,
+		&s.ReactionReceivedCount,
+		&s.WeekendCount,
+		&s.ImageCount,
+		&s.CreatedPlaceCount,
+	); err != nil {
+		return badgeStats{}, fmt.Errorf("load badge stats: %w", err)
 	}
+	return s, nil
+}
 
-	satisfied := satisfiedBadges(s)
-	if len(satisfied) == 0 {
+func insertBadgeKeys(ctx context.Context, tx pgx.Tx, userID string, keys []string, sent bool) ([]Badge, error) {
+	if len(keys) == 0 {
 		return nil, nil
 	}
 
 	rows, err := tx.Query(ctx,
-		`INSERT INTO user_badges (user_id, badge_key)
-		 SELECT $1, k FROM unnest($2::text[]) AS k
+		`INSERT INTO user_badges (user_id, badge_key, sent)
+		 SELECT $1, k, $3 FROM unnest($2::text[]) AS k
 		 ON CONFLICT DO NOTHING
 		 RETURNING badge_key`,
-		userID, satisfied)
+		userID, keys, sent)
 	if err != nil {
 		return nil, fmt.Errorf("award badges: %w", err)
 	}
@@ -254,6 +291,63 @@ func (r *Repository) EvaluateBadgesTx(ctx context.Context, tx pgx.Tx, userID str
 		return nil, fmt.Errorf("iterate awarded badges: %w", err)
 	}
 	return awarded, nil
+}
+
+// ClaimUnsentBadges syncs any eligible-but-missing badges as unsent, returns all
+// unsent badges, and marks them sent in the same transaction.
+func (r *Repository) ClaimUnsentBadges(ctx context.Context, userID string) ([]Badge, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin claim unsent badges: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	s, err := loadBadgeStats(ctx, tx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := insertBadgeKeys(ctx, tx, userID, satisfiedBadges(s), false); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.Query(ctx,
+		`WITH claimed AS (
+		    SELECT badge_key, awarded_at
+		      FROM user_badges
+		     WHERE user_id = $1 AND sent = FALSE
+		     ORDER BY awarded_at
+		  ), updated AS (
+		    UPDATE user_badges ub
+		       SET sent = TRUE
+		      FROM claimed c
+		     WHERE ub.user_id = $1 AND ub.badge_key = c.badge_key
+		     RETURNING ub.badge_key, c.awarded_at
+		  )
+		  SELECT badge_key FROM updated ORDER BY awarded_at`,
+		userID)
+	if err != nil {
+		return nil, fmt.Errorf("claim unsent badges: %w", err)
+	}
+	defer rows.Close()
+
+	var badges []Badge
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scan claimed badge: %w", err)
+		}
+		if b, ok := badgeByKey(key); ok {
+			badges = append(badges, b)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate claimed badges: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit claim unsent badges: %w", err)
+	}
+	return badges, nil
 }
 
 // Badges returns the full catalog annotated with the user's unlock state.

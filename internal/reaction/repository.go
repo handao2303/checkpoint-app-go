@@ -34,6 +34,31 @@ func (r *Repository) Set(ctx context.Context, checkpointID, userID, reaction str
 	return nil
 }
 
+// AwardSocialScoutIfEligible awards the checkpoint owner after they receive at
+// least ten reactions from other users.
+func (r *Repository) AwardSocialScoutIfEligible(ctx context.Context, checkpointID, reactorID string) error {
+	if _, err := r.db.Exec(ctx,
+		`INSERT INTO user_badges (user_id, badge_key, sent)
+		 SELECT c.user_id, 'social_scout', FALSE
+		   FROM checkpoints c
+		  WHERE c.id = $1
+		    AND c.deleted_at IS NULL
+		    AND c.user_id <> $2
+		    AND (
+		      SELECT COUNT(*)
+		        FROM checkpoint_reactions cr
+		        JOIN checkpoints owned ON owned.id = cr.checkpoint_id
+		       WHERE owned.user_id = c.user_id
+		         AND owned.deleted_at IS NULL
+		         AND cr.user_id <> c.user_id
+		    ) >= 10
+		  ON CONFLICT DO NOTHING`,
+		checkpointID, reactorID); err != nil {
+		return fmt.Errorf("award social scout: %w", err)
+	}
+	return nil
+}
+
 // Remove deletes userID's reaction on a checkpoint (no-op if absent).
 func (r *Repository) Remove(ctx context.Context, checkpointID, userID string) error {
 	if _, err := r.db.Exec(ctx,

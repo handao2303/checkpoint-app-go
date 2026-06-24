@@ -23,11 +23,12 @@ type Place struct {
 // ResolveParams carries the data used to match or create a place during a
 // check-in (inherited from the checkpoint).
 type ResolveParams struct {
-	Name     string
-	Category string
-	Lat      float64
-	Lng      float64
-	Address  *string
+	Name      string
+	Category  string
+	Lat       float64
+	Lng       float64
+	Address   *string
+	CreatedBy string
 }
 
 // Point is an optional location bias for search.
