@@ -9,6 +9,7 @@ import (
 	"github.com/quanluon/checkpoint-app/internal/identity"
 	"github.com/quanluon/checkpoint-app/internal/journey"
 	"github.com/quanluon/checkpoint-app/internal/place"
+	"github.com/quanluon/checkpoint-app/pkg/storage"
 )
 
 type checkpointService interface {
@@ -36,6 +37,13 @@ type thumbMeasurer interface {
 	MeasureCheckpoint(ctx context.Context, checkpointID string) (map[string]checkpoint.ThumbSize, error)
 }
 
+// cardBuilder renders the 1200x630 social card for a checkpoint on demand, for
+// media the card backfill has not reached. Optional — nil means share cards use
+// the thumbnail, which on a portrait photo is too narrow for a large preview.
+type cardBuilder interface {
+	EnsureForCheckpoint(ctx context.Context, checkpointID string) (map[string]checkpoint.OGCard, error)
+}
+
 // Service provides share-specific data aggregation logic.
 type Service struct {
 	checkpointSvc checkpointService
@@ -43,6 +51,8 @@ type Service struct {
 	identitySvc   identityService
 	placeSvc      placeService
 	measurer      thumbMeasurer
+	cards         cardBuilder
+	mediaBase     string
 }
 
 // WithThumbMeasurer attaches the on-demand thumbnail measurer. Without it,
@@ -50,6 +60,15 @@ type Service struct {
 // was never recorded.
 func (s *Service) WithThumbMeasurer(m thumbMeasurer) *Service {
 	s.measurer = m
+	return s
+}
+
+// WithCardBuilder attaches the on-demand social-card renderer. mediaBase is the
+// public base URL cards are served from, so a freshly rendered card's key can be
+// turned into the URL the meta tag advertises.
+func (s *Service) WithCardBuilder(b cardBuilder, mediaBase string) *Service {
+	s.cards = b
+	s.mediaBase = mediaBase
 	return s
 }
 
@@ -110,6 +129,13 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 		description = *detail.Checkpoint.Note
 	}
 
+	// A purpose-built 1200x630 card beats the feed thumbnail whenever one
+	// exists: thumbnails are capped at a 640px longest edge, so portrait photos
+	// end up too narrow for Messenger to render a large preview.
+	if card, w, h, ok := s.socialCard(ctx, detail); ok {
+		return s.checkpointMeta(detail, id, frontendURL, title, description, card, w, h), nil
+	}
+
 	image := frontendURL + fallbackWide
 	if detail.Checkpoint.ThumbnailURL != nil && *detail.Checkpoint.ThumbnailURL != "" {
 		image = *detail.Checkpoint.ThumbnailURL
@@ -125,6 +151,11 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 
 	width, height := s.thumbSize(ctx, detail, image)
 
+	return s.checkpointMeta(detail, id, frontendURL, title, description, image, width, height), nil
+}
+
+// checkpointMeta assembles the card once the image and its size are settled.
+func (s *Service) checkpointMeta(_ *checkpoint.Detail, id, frontendURL, title, description, image string, width, height int) *MetaData {
 	return &MetaData{
 		Title:       title,
 		Description: description,
@@ -135,7 +166,7 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 		TwitterCard: cardLarge,
 		URL:         fmt.Sprintf("%s/c/%s", frontendURL, id),
 		RedirectURL: fmt.Sprintf("%s/c/%s", frontendURL, id),
-	}, nil
+	}
 }
 
 // GetJourneyMeta aggregates metadata for a journey share.
@@ -299,4 +330,56 @@ func imageForURL(detail *checkpoint.Detail, url string) *checkpoint.Image {
 		}
 	}
 	return nil
+}
+
+// socialCard resolves the checkpoint's 1200x630 preview card, rendering one on
+// demand if the backfill has not reached this media yet.
+//
+// Returns ok=false when there is no card and none can be made — an original too
+// small to crop from, a render failure, or no builder configured — in which case
+// the caller falls back to the thumbnail.
+func (s *Service) socialCard(ctx context.Context, detail *checkpoint.Detail) (url string, width, height int, ok bool) {
+	cover := coverImage(detail)
+	if cover == nil {
+		return "", 0, 0, false
+	}
+
+	if cover.OGImageURL != nil && *cover.OGImageURL != "" {
+		return *cover.OGImageURL, intOrZero(cover.OGWidth), intOrZero(cover.OGHeight), true
+	}
+	if s.cards == nil {
+		return "", 0, 0, false
+	}
+
+	built, err := s.cards.EnsureForCheckpoint(ctx, detail.Checkpoint.ID)
+	if err != nil {
+		log.Printf("share: build social card for %s: %v", detail.Checkpoint.ID, err)
+		return "", 0, 0, false
+	}
+	card, made := built[cover.ID]
+	if !made {
+		return "", 0, 0, false
+	}
+	return storage.PublicURL(s.mediaBase, card.Key), card.Width, card.Height, true
+}
+
+// coverImage is the media row the card should come from: the one the
+// checkpoint's denormalized cover points at, else the first image.
+func coverImage(detail *checkpoint.Detail) *checkpoint.Image {
+	if len(detail.Images) == 0 {
+		return nil
+	}
+	if detail.Checkpoint.ThumbnailURL != nil {
+		if img := imageForURL(detail, *detail.Checkpoint.ThumbnailURL); img != nil {
+			return img
+		}
+	}
+	return &detail.Images[0]
+}
+
+func intOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }

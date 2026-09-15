@@ -44,7 +44,8 @@ func run() error {
 	var (
 		batchSize = flag.Int("batch", 200, "rows to fetch per page")
 		limit     = flag.Int("limit", 0, "stop after this many rows (0 = no limit)")
-		dryRun    = flag.Bool("dry-run", false, "only report how many rows need measuring")
+		dryRun    = flag.Bool("dry-run", false, "only report how many rows need work")
+		cards     = flag.Bool("cards", false, "render missing 1200x630 social cards instead of measuring thumbnails")
 	)
 	flag.Parse()
 
@@ -85,7 +86,11 @@ func run() error {
 	repo := checkpoint.NewRepository(pool, os.Getenv("R2_PUBLIC_URL"), nil, nil, nil)
 
 	if *dryRun {
-		return reportPending(ctx, repo)
+		return reportPending(ctx, repo, *cards)
+	}
+
+	if *cards {
+		return backfillCards(ctx, repo, r2, *batchSize, *limit)
 	}
 
 	measurer := checkpoint.NewMeasurer(repo, r2)
@@ -111,21 +116,67 @@ func run() error {
 	return nil
 }
 
+// backfillCards renders social cards for every media row that lacks one.
+func backfillCards(ctx context.Context, repo *checkpoint.Repository, r2 *storage.R2, batchSize, limit int) error {
+	builder := checkpoint.NewCardBuilder(repo, r2)
+
+	start := time.Now()
+	stats, err := builder.BackfillCards(ctx, batchSize, limit, func(s checkpoint.CardBackfillStats) {
+		log.Printf("progress: scanned=%d built=%d skipped=%d failed=%d (%s)",
+			s.Scanned, s.Built, s.Skipped, s.Failed, time.Since(start).Round(time.Second))
+	})
+
+	log.Printf("done: scanned=%d built=%d skipped=%d failed=%d in %s",
+		stats.Scanned, stats.Built, stats.Skipped, stats.Failed, time.Since(start).Round(time.Second))
+	if stats.Skipped > 0 {
+		log.Printf("%d row(s) skipped: the original is narrower than %dpx, so a card "+
+			"would have to be upscaled — those shares keep using the thumbnail",
+			stats.Skipped, checkpoint.OGCardWidth/2)
+	}
+
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) {
+		log.Print("interrupted — re-run to continue where this left off")
+	}
+	return nil
+}
+
 // reportPending counts the rows a real run would touch, without writing.
-func reportPending(ctx context.Context, repo *checkpoint.Repository) error {
+func reportPending(ctx context.Context, repo *checkpoint.Repository, cards bool) error {
 	var total int
 	var afterID string
 	for {
-		batch, err := repo.ThumbnailsMissingDimensions(ctx, afterID, 1000)
-		if err != nil {
-			return err
+		var n int
+		if cards {
+			batch, err := repo.OGCardsPending(ctx, afterID, 1000)
+			if err != nil {
+				return err
+			}
+			n = len(batch)
+			if n > 0 {
+				afterID = batch[n-1].ImageID
+			}
+		} else {
+			batch, err := repo.ThumbnailsMissingDimensions(ctx, afterID, 1000)
+			if err != nil {
+				return err
+			}
+			n = len(batch)
+			if n > 0 {
+				afterID = batch[n-1].ImageID
+			}
 		}
-		if len(batch) == 0 {
+		if n == 0 {
 			break
 		}
-		total += len(batch)
-		afterID = batch[len(batch)-1].ImageID
+		total += n
 	}
-	log.Printf("dry run: %d thumbnail(s) need measuring", total)
+	if cards {
+		log.Printf("dry run: %d media row(s) have no social card", total)
+	} else {
+		log.Printf("dry run: %d thumbnail(s) need measuring", total)
+	}
 	return nil
 }

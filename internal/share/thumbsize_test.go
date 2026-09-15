@@ -141,3 +141,113 @@ func TestTemplateEmitsDimensionTagsOnlyWhenKnown(t *testing.T) {
 		})
 	}
 }
+
+// stubCards returns a prebuilt card for img-1.
+type stubCards struct {
+	card  checkpoint.OGCard
+	err   error
+	calls int
+}
+
+func (c *stubCards) EnsureForCheckpoint(context.Context, string) (map[string]checkpoint.OGCard, error) {
+	c.calls++
+	if c.err != nil {
+		return nil, c.err
+	}
+	if c.card.Key == "" {
+		return nil, nil // nothing could be built (e.g. original too small)
+	}
+	return map[string]checkpoint.OGCard{"img-1": c.card}, nil
+}
+
+func TestCheckpointMetaPrefersExistingSocialCard(t *testing.T) {
+	detail := detailWithThumb("https://r2.dev/thumb.jpg", ptr(480), ptr(640))
+	detail.Images[0].OGImageURL = ptr("https://media.test/og/card.jpg")
+	detail.Images[0].OGWidth, detail.Images[0].OGHeight = ptr(1200), ptr(630)
+
+	cards := &stubCards{}
+	svc := NewService(&mockCheckpointService{detail: detail}, &mockJourneyService{},
+		&mockIdentityService{}, &mockPlaceService{}).
+		WithThumbMeasurer(&recordingMeasurer{}).
+		WithCardBuilder(cards, "https://media.test")
+
+	meta, err := svc.GetCheckpointMeta(context.Background(), "cp-1", "https://checkpoint.app")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.Image != "https://media.test/og/card.jpg" {
+		t.Errorf("used %q, want the social card", meta.Image)
+	}
+	if meta.ImageWidth != 1200 || meta.ImageHeight != 630 {
+		t.Errorf("got %dx%d, want 1200x630", meta.ImageWidth, meta.ImageHeight)
+	}
+	if cards.calls != 0 {
+		t.Errorf("rebuilt the card %d time(s) despite one existing", cards.calls)
+	}
+}
+
+func TestCheckpointMetaBuildsSocialCardOnDemand(t *testing.T) {
+	detail := detailWithThumb("https://r2.dev/thumb.jpg", ptr(480), ptr(640))
+	cards := &stubCards{card: checkpoint.OGCard{Key: "checkpoints/x/og/new.jpg", Width: 1200, Height: 630}}
+
+	svc := NewService(&mockCheckpointService{detail: detail}, &mockJourneyService{},
+		&mockIdentityService{}, &mockPlaceService{}).
+		WithThumbMeasurer(&recordingMeasurer{}).
+		WithCardBuilder(cards, "https://media.test")
+
+	meta, err := svc.GetCheckpointMeta(context.Background(), "cp-1", "https://checkpoint.app")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.Image != "https://media.test/checkpoints/x/og/new.jpg" {
+		t.Errorf("used %q, want the freshly built card URL", meta.Image)
+	}
+	if meta.ImageWidth != 1200 || meta.ImageHeight != 630 {
+		t.Errorf("got %dx%d, want 1200x630", meta.ImageWidth, meta.ImageHeight)
+	}
+	if cards.calls != 1 {
+		t.Errorf("built %d time(s), want 1", cards.calls)
+	}
+}
+
+// When no card can be made (original too small), the card must fall back to the
+// thumbnail rather than losing its image.
+func TestCheckpointMetaFallsBackToThumbnailWhenNoCardPossible(t *testing.T) {
+	detail := detailWithThumb("https://r2.dev/thumb.jpg", ptr(390), ptr(520))
+	cards := &stubCards{} // builds nothing
+
+	svc := NewService(&mockCheckpointService{detail: detail}, &mockJourneyService{},
+		&mockIdentityService{}, &mockPlaceService{}).
+		WithThumbMeasurer(&recordingMeasurer{}).
+		WithCardBuilder(cards, "https://media.test")
+
+	meta, err := svc.GetCheckpointMeta(context.Background(), "cp-1", "https://checkpoint.app")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if meta.Image != "https://r2.dev/thumb.jpg" {
+		t.Errorf("used %q, want the thumbnail fallback", meta.Image)
+	}
+	if meta.ImageWidth != 390 || meta.ImageHeight != 520 {
+		t.Errorf("got %dx%d, want the thumbnail's 390x520", meta.ImageWidth, meta.ImageHeight)
+	}
+}
+
+// A card-builder failure must not cost the card its image.
+func TestCheckpointMetaSurvivesCardBuildFailure(t *testing.T) {
+	detail := detailWithThumb("https://r2.dev/thumb.jpg", ptr(640), ptr(360))
+	cards := &stubCards{err: errors.New("r2 down")}
+
+	svc := NewService(&mockCheckpointService{detail: detail}, &mockJourneyService{},
+		&mockIdentityService{}, &mockPlaceService{}).
+		WithThumbMeasurer(&recordingMeasurer{}).
+		WithCardBuilder(cards, "https://media.test")
+
+	meta, err := svc.GetCheckpointMeta(context.Background(), "cp-1", "https://checkpoint.app")
+	if err != nil {
+		t.Fatalf("share card should survive a build failure: %v", err)
+	}
+	if meta.Image != "https://r2.dev/thumb.jpg" {
+		t.Errorf("used %q, want the thumbnail fallback", meta.Image)
+	}
+}

@@ -158,8 +158,12 @@ func run() error {
 	// media whose size was never recorded (anything predating the columns, and
 	// image thumbnails, which clients upload directly).
 	thumbMeasurer := checkpoint.NewMeasurer(cpRepo, r2)
+	// Social cards are 1200x630 renders of the original, used only by share
+	// pages — feed thumbnails stay small.
+	cardBuilder := checkpoint.NewCardBuilder(cpRepo, r2)
 	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc, placeSvc).
-		WithThumbMeasurer(thumbMeasurer)
+		WithThumbMeasurer(thumbMeasurer).
+		WithCardBuilder(cardBuilder, cfg.r2.PublicURL)
 	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL, redisClient)
 	var driveHandler *gdrive.Handler
 	var driveSyncer *gdrive.Syncer

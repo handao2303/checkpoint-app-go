@@ -394,6 +394,66 @@ func (r *Repository) UnmeasuredThumbsForCheckpoint(ctx context.Context, checkpoi
 	return out, rows.Err()
 }
 
+// PendingOGCard is one media row awaiting a social card.
+type PendingOGCard struct {
+	ImageID   string
+	ObjectKey string
+}
+
+// OGCardsPending pages through media rows that have no social card yet, oldest
+// first. afterID is the last id of the previous page (empty for the first).
+func (r *Repository) OGCardsPending(ctx context.Context, afterID string, limit int) ([]PendingOGCard, error) {
+	return r.scanPendingOGCards(ctx, `
+		SELECT id, object_key
+		  FROM checkpoint_images
+		 WHERE og_key IS NULL
+		   AND media_type = $3
+		   AND ($1 = '' OR id > $1::uuid)
+		 ORDER BY id
+		 LIMIT $2`, afterID, limit, MediaTypeImage)
+}
+
+// OGCardsPendingForCheckpoint lists one checkpoint's media rows that have no
+// social card, in cover order.
+func (r *Repository) OGCardsPendingForCheckpoint(ctx context.Context, checkpointID string) ([]PendingOGCard, error) {
+	return r.scanPendingOGCards(ctx, `
+		SELECT id, object_key
+		  FROM checkpoint_images
+		 WHERE checkpoint_id = $1
+		   AND og_key IS NULL
+		   AND media_type = $3
+		 ORDER BY sort_order, created_at
+		 LIMIT $2`, checkpointID, 50, MediaTypeImage)
+}
+
+func (r *Repository) scanPendingOGCards(ctx context.Context, sql string, args ...any) ([]PendingOGCard, error) {
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list pending og cards: %w", err)
+	}
+	defer rows.Close()
+
+	var out []PendingOGCard
+	for rows.Next() {
+		var c PendingOGCard
+		if err := rows.Scan(&c.ImageID, &c.ObjectKey); err != nil {
+			return nil, fmt.Errorf("scan pending og card: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// SetOGCard records a rendered social card for a media row.
+func (r *Repository) SetOGCard(ctx context.Context, imageID, ogKey string, width, height int) error {
+	if _, err := r.db.Exec(ctx,
+		`UPDATE checkpoint_images SET og_key = $2, og_width = $3, og_height = $4 WHERE id = $1`,
+		imageID, ogKey, width, height); err != nil {
+		return fmt.Errorf("set og card: %w", err)
+	}
+	return nil
+}
+
 // SetThumbDimensions records a measured thumbnail size without touching any
 // other column — used by the backfill, which must not disturb live rows.
 func (r *Repository) SetThumbDimensions(ctx context.Context, imageID string, width, height int) error {
@@ -767,7 +827,8 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		        c.image_key, c.thumbnail_key,
 		        u.username, u.display_name, u.avatar_key,
 		        ci.id, ci.object_key, ci.thumbnail_key, ci.media_type, ci.sort_order,
-		        ci.thumb_width, ci.thumb_height
+		        ci.thumb_width, ci.thumb_height,
+		        ci.og_key, ci.og_width, ci.og_height
 		 FROM checkpoints c
 		 JOIN users u ON u.id = c.user_id
 		 LEFT JOIN checkpoint_images ci ON ci.checkpoint_id = c.id
@@ -787,6 +848,8 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		var mediaType *string
 		var sortOrder *int
 		var thumbWidth, thumbHeight *int
+		var ogKey *string
+		var ogWidth, ogHeight *int
 		if err := rows.Scan(
 			&cp.ID, &cp.UserID, &cp.Name, &cp.Category, &cp.Note, &cp.Rating, &cp.Lat, &cp.Lng,
 			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.TakenAt, &cp.CreatedAt, &cp.UpdatedAt,
@@ -794,6 +857,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 			&author.Username, &author.DisplayName, &author.AvatarURL,
 			&imageID, &objectKey, &thumbnailKey, &mediaType, &sortOrder,
 			&thumbWidth, &thumbHeight,
+			&ogKey, &ogWidth, &ogHeight,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint detail: %w", err)
 		}
@@ -825,6 +889,11 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 			} else {
 				// No thumbnail yet → still being processed by the media worker.
 				img.Pending = true
+			}
+			if ogKey != nil {
+				ogURL := storage.PublicURL(r.mediaBase, *ogKey)
+				img.OGImageURL = &ogURL
+				img.OGWidth, img.OGHeight = ogWidth, ogHeight
 			}
 			detail.Images = append(detail.Images, img)
 		}

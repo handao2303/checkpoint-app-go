@@ -126,6 +126,12 @@ func (p *Processor) processVideo(ctx context.Context, it pendingMedia, raw []byt
 // e.g. checkpoints/<prefix>/<rand>.mp4 → checkpoints/<prefix>/thumbnails/<rand>.jpg.
 // This satisfies validateMediaKeys (checkpoints/ prefix, .jpg suffix).
 func thumbnailKeyFor(objectKey string) string {
-	dir := path.Dir(objectKey)
-	return path.Join(dir, "thumbnails", randHex(8)+".jpg")
+	return siblingKey(objectKey, "thumbnails", ".jpg")
+}
+
+// siblingKey places a derivative next to its source under the given subfolder,
+// e.g. checkpoints/<prefix>/<rand>.mp4 + "thumbnails" → checkpoints/<prefix>/thumbnails/<rand>.jpg.
+// Keeping the checkpoints/ prefix is what satisfies validateMediaKeys.
+func siblingKey(objectKey, subdir, ext string) string {
+	return path.Join(path.Dir(objectKey), subdir, randHex(8)+ext)
 }

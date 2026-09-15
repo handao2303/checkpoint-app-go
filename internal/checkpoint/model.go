@@ -98,6 +98,12 @@ type Image struct {
 	// first-time Facebook scrape render the preview without fetching the image.
 	ThumbWidth  *int `json:"thumb_width,omitempty"`
 	ThumbHeight *int `json:"thumb_height,omitempty"`
+	// OGImageURL is the 1200x630 social card rendered from the original, used
+	// only by share pages. Nil when none has been rendered — either not yet, or
+	// the original is too small to crop one from.
+	OGImageURL *string `json:"-"`
+	OGWidth    *int    `json:"-"`
+	OGHeight   *int    `json:"-"`
 	// Pending is true while the media is still being processed by the worker
 	// (no thumbnail yet). Clients show a "đang xử lý" placeholder.
 	Pending bool `json:"pending,omitempty"`
