@@ -52,9 +52,22 @@ type MetaData struct {
 	Description string
 	Image       string
 	Type        string
+	// TwitterCard is "summary_large_image" for wide photos and "summary" for
+	// square art such as avatars, which crops badly in the large card.
+	TwitterCard string
 	URL         string
 	RedirectURL string
 }
+
+const (
+	cardLarge = "summary_large_image"
+	cardSmall = "summary"
+
+	// fallbackWide is the 1200x630 site card, sized for wide previews;
+	// icon-512.png is square and only suits the compact profile card.
+	fallbackWide   = "/og-image.jpg"
+	fallbackSquare = "/icon-512.png"
+)
 
 // GetCheckpointMeta aggregates metadata for a checkpoint share.
 func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string) (*MetaData, error) {
@@ -75,7 +88,7 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 		description = *detail.Checkpoint.Note
 	}
 
-	image := frontendURL + "/icon-512.png"
+	image := frontendURL + fallbackWide
 	if detail.Checkpoint.ThumbnailURL != nil && *detail.Checkpoint.ThumbnailURL != "" {
 		image = *detail.Checkpoint.ThumbnailURL
 	} else if detail.Checkpoint.ImageURL != nil && *detail.Checkpoint.ImageURL != "" {
@@ -92,7 +105,8 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 		Title:       title,
 		Description: description,
 		Image:       image,
-		Type:        "place",
+		Type:        "article",
+		TwitterCard: cardLarge,
 		URL:         fmt.Sprintf("%s/c/%s", frontendURL, id),
 		RedirectURL: fmt.Sprintf("%s/c/%s", frontendURL, id),
 	}, nil
@@ -123,7 +137,7 @@ func (s *Service) GetJourneyMeta(ctx context.Context, id, frontendURL string) (*
 		description = *detail.Journey.Description
 	}
 
-	image := frontendURL + "/icon-512.png"
+	image := frontendURL + fallbackWide
 	for _, cp := range detail.Checkpoints {
 		if cp.ThumbnailURL != nil && *cp.ThumbnailURL != "" {
 			image = *cp.ThumbnailURL
@@ -139,6 +153,7 @@ func (s *Service) GetJourneyMeta(ctx context.Context, id, frontendURL string) (*
 		Description: description,
 		Image:       image,
 		Type:        "website",
+		TwitterCard: cardLarge,
 		URL:         fmt.Sprintf("%s/j/%s", frontendURL, id),
 		RedirectURL: fmt.Sprintf("%s/j/%s", frontendURL, id),
 	}, nil
@@ -165,7 +180,10 @@ func (s *Service) GetUserMeta(ctx context.Context, ref, frontendURL string) (*Me
 		description = fmt.Sprintf("%s · %s", *u.Bio, stats)
 	}
 
-	image := frontendURL + "/icon-512.png"
+	// Avatars (and the icon fallback) are square, so the wide card would crop
+	// the face off; use the compact card for profiles.
+	image := frontendURL + fallbackSquare
+	card := cardSmall
 	if u.AvatarURL != nil && *u.AvatarURL != "" {
 		image = *u.AvatarURL
 	}
@@ -175,6 +193,7 @@ func (s *Service) GetUserMeta(ctx context.Context, ref, frontendURL string) (*Me
 		Description: description,
 		Image:       image,
 		Type:        "profile",
+		TwitterCard: card,
 		URL:         fmt.Sprintf("%s/u/%s", frontendURL, u.ID),
 		RedirectURL: fmt.Sprintf("%s/u/%s", frontendURL, u.ID),
 	}, nil
@@ -193,7 +212,7 @@ func (s *Service) GetPlaceMeta(ctx context.Context, id, frontendURL string) (*Me
 		description = fmt.Sprintf("Địa chỉ: %s. %s", *detail.Place.Address, description)
 	}
 
-	image := frontendURL + "/icon-512.png"
+	image := frontendURL + fallbackWide
 	if detail.Place.CoverImageURL != nil && *detail.Place.CoverImageURL != "" {
 		image = *detail.Place.CoverImageURL
 	} else if len(detail.Images) > 0 {
@@ -205,6 +224,7 @@ func (s *Service) GetPlaceMeta(ctx context.Context, id, frontendURL string) (*Me
 		Description: description,
 		Image:       image,
 		Type:        "website",
+		TwitterCard: cardLarge,
 		URL:         fmt.Sprintf("%s/p/%s", frontendURL, id),
 		RedirectURL: fmt.Sprintf("%s/p/%s", frontendURL, id),
 	}, nil

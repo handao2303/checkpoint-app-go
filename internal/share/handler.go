@@ -15,19 +15,23 @@ import (
 )
 
 var shareTemplate = template.Must(template.New("share").Parse(`<!DOCTYPE html>
-<html>
+<html prefix="og: https://ogp.me/ns#">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{.Title}}</title>
+    <link rel="canonical" href="{{.URL}}">
     <meta property="og:title" content="{{.Title}}">
     <meta property="og:description" content="{{.Description}}">
     <meta property="og:image" content="{{.Image}}">
+    <meta property="og:image:secure_url" content="{{.Image}}">
+    <meta property="og:image:alt" content="{{.Title}}">
     <meta property="og:type" content="{{.Type}}">
     <meta property="og:url" content="{{.URL}}">
     <meta property="og:site_name" content="Checkpoint">
+    <meta property="og:locale" content="vi_VN">
     <!-- Twitter -->
-    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:card" content="{{.TwitterCard}}">
     <meta name="twitter:title" content="{{.Title}}">
     <meta name="twitter:description" content="{{.Description}}">
     <meta name="twitter:image" content="{{.Image}}">
@@ -111,7 +115,7 @@ func (h *Handler) getCachedMeta(ctx context.Context, key string, fetch func() (*
 // ShareCheckpoint handles checkpoint share links.
 func (h *Handler) ShareCheckpoint(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key := "share:meta:checkpoint:" + id
+	key := "share:meta:v2:checkpoint:" + id
 	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
 		return h.svc.GetCheckpointMeta(r.Context(), id, h.frontendURL)
 	})
@@ -127,7 +131,7 @@ func (h *Handler) ShareCheckpoint(w http.ResponseWriter, r *http.Request) {
 // ShareJourney handles journey share links.
 func (h *Handler) ShareJourney(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key := "share:meta:journey:" + id
+	key := "share:meta:v2:journey:" + id
 	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
 		return h.svc.GetJourneyMeta(r.Context(), id, h.frontendURL)
 	})
@@ -144,7 +148,7 @@ func (h *Handler) ShareJourney(w http.ResponseWriter, r *http.Request) {
 // a username (legacy links).
 func (h *Handler) ShareUser(w http.ResponseWriter, r *http.Request) {
 	ref := chi.URLParam(r, "id")
-	key := "share:meta:user:" + ref
+	key := "share:meta:v2:user:" + ref
 	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
 		return h.svc.GetUserMeta(r.Context(), ref, h.frontendURL)
 	})
@@ -160,7 +164,7 @@ func (h *Handler) ShareUser(w http.ResponseWriter, r *http.Request) {
 // SharePlace handles place share links.
 func (h *Handler) SharePlace(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	key := "share:meta:place:" + id
+	key := "share:meta:v2:place:" + id
 	meta, err := h.getCachedMeta(r.Context(), key, func() (*MetaData, error) {
 		return h.svc.GetPlaceMeta(r.Context(), id, h.frontendURL)
 	})
@@ -176,14 +180,45 @@ func (h *Handler) SharePlace(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) respondShare(w http.ResponseWriter, r *http.Request, meta *MetaData) {
 	ua := r.Header.Get("User-Agent")
 	if isCrawler(ua) {
+		// og:url must be self-referential. Facebook (and every other scraper that
+		// honours canonical URLs) re-scrapes whatever og:url points at, so
+		// pointing it at the SPA made every card fall back to the SPA's static
+		// site-wide og-image instead of the checkpoint/place/user image.
+		view := *meta
+		view.URL = currentURL(r)
+		if view.TwitterCard == "" {
+			view.TwitterCard = cardLarge
+		}
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := shareTemplate.Execute(w, meta); err != nil {
+		// Crawlers cache aggressively; keep it short so edits to a checkpoint
+		// surface in re-scrapes without a manual purge.
+		w.Header().Set("Cache-Control", "public, max-age=300")
+		if err := shareTemplate.Execute(w, &view); err != nil {
 			log.Printf("share: template execution error: %v", err)
 		}
 		return
 	}
 
 	http.Redirect(w, r, meta.RedirectURL, http.StatusFound)
+}
+
+// currentURL rebuilds the absolute URL this request was made to, honouring the
+// proxy headers set by Cloudflare in front of the share domain.
+func currentURL(r *http.Request) string {
+	scheme := "https"
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = strings.Split(proto, ",")[0]
+	} else if r.TLS == nil && strings.HasPrefix(r.Host, "localhost") {
+		scheme = "http"
+	}
+
+	host := r.Host
+	if fwd := r.Header.Get("X-Forwarded-Host"); fwd != "" {
+		host = strings.TrimSpace(strings.Split(fwd, ",")[0])
+	}
+
+	return scheme + "://" + host + r.URL.EscapedPath()
 }
 
 func isCrawler(ua string) bool {
