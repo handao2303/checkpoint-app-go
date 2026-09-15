@@ -1,4 +1,4 @@
-name: Local Test & Vet (Self-Hosted)
+name: Local Test & Vet
 
 on:
   push:
@@ -13,11 +13,7 @@ concurrency:
 
 jobs:
   test-and-vet:
-    runs-on: self-hosted
-
-    defaults:
-      run:
-        shell: cmd
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout source code

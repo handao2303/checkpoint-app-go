@@ -26,7 +26,7 @@ jobs:
   # ── Notify start ──────────────────────────────────────────────
   notify-start:
     name: Notify start
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/telegram-notify
@@ -38,7 +38,7 @@ jobs:
   test:
     name: Test
     needs: notify-start
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -68,7 +68,7 @@ jobs:
     name: Migrate database
     needs: [notify-start, test]
     if: github.event_name == 'push' || inputs.run_migrations
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
@@ -108,7 +108,7 @@ jobs:
     name: Deploy to Cloud Run
     needs: [notify-start, test, migrate]
     if: ${{ always() && needs.test.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -298,7 +298,7 @@ jobs:
     needs: [notify-start, test, migrate]
     # Runs in parallel with `deploy`. Skipped unless Pub/Sub is configured.
     if: ${{ always() && needs.test.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') && vars.PUBSUB_TOPIC != '' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
@@ -386,7 +386,7 @@ jobs:
     name: Health check
     needs: deploy
     if: ${{ always() && needs.deploy.result == 'success' }}
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
