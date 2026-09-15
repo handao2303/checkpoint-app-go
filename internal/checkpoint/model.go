@@ -93,6 +93,11 @@ type Image struct {
 	ThumbnailURL *string `json:"thumbnail_url,omitempty"`
 	Type         string  `json:"type"`
 	SortOrder    int     `json:"sort_order"`
+	// ThumbWidth/ThumbHeight are the thumbnail's pixel dimensions, when measured.
+	// Share pages emit them as og:image:width/height so Messenger and a
+	// first-time Facebook scrape render the preview without fetching the image.
+	ThumbWidth  *int `json:"thumb_width,omitempty"`
+	ThumbHeight *int `json:"thumb_height,omitempty"`
 	// Pending is true while the media is still being processed by the worker
 	// (no thumbnail yet). Clients show a "đang xử lý" placeholder.
 	Pending bool `json:"pending,omitempty"`

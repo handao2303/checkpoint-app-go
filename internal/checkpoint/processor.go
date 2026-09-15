@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"path"
 )
 
@@ -12,7 +13,7 @@ import (
 // interface, satisfied by *Repository).
 type processorRepo interface {
 	PendingMedia(ctx context.Context, checkpointID string) ([]pendingMedia, error)
-	SetMediaThumbnail(ctx context.Context, imageID, thumbnailKey string) error
+	SetMediaThumbnail(ctx context.Context, imageID, thumbnailKey string, width, height int) error
 	RefreshCover(ctx context.Context, checkpointID string) error
 }
 
@@ -107,8 +108,18 @@ func (p *Processor) processVideo(ctx context.Context, it pendingMedia, raw []byt
 		return fmt.Errorf("upload thumbnail: %w", err)
 	}
 
+	// Measure the thumbnail we just produced so share pages can emit
+	// og:image:width/height. The bytes are already in hand, so this is free.
+	// A failure here must not fail the media: the row simply stays unmeasured
+	// and the backfill picks it up.
+	width, height, err := decodeThumbSizeBytes(thumb)
+	if err != nil {
+		log.Printf("checkpoint: measure thumbnail %s: %v", thumbKey, err)
+		width, height = 0, 0
+	}
+
 	// Setting thumbnail_key marks the row done (and makes duplicate deliveries skip it).
-	return p.repo.SetMediaThumbnail(ctx, it.ID, thumbKey)
+	return p.repo.SetMediaThumbnail(ctx, it.ID, thumbKey, width, height)
 }
 
 // thumbnailKeyFor derives a thumbnail object key in the media's own namespace,

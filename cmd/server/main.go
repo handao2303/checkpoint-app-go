@@ -154,7 +154,12 @@ func run() error {
 	cpHandler := checkpoint.NewHandler(cpSvc).WithMedia(checkpointPublisher, mediaProcessor)
 	journeyHandler := journey.NewHandler(journeySvc).WithMediaCleanup(cleanupPublisher)
 
-	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc, placeSvc)
+	// Share cards need og:image:width/height; the measurer fills them in for
+	// media whose size was never recorded (anything predating the columns, and
+	// image thumbnails, which clients upload directly).
+	thumbMeasurer := checkpoint.NewMeasurer(cpRepo, r2)
+	shareSvc := share.NewService(cpSvc, journeySvc, identitySvc, placeSvc).
+		WithThumbMeasurer(thumbMeasurer)
 	shareHandler := share.NewHandler(shareSvc, cfg.frontendURL, redisClient)
 	var driveHandler *gdrive.Handler
 	var driveSyncer *gdrive.Syncer

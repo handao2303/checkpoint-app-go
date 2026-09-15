@@ -3,6 +3,7 @@ package share
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/quanluon/checkpoint-app/internal/checkpoint"
 	"github.com/quanluon/checkpoint-app/internal/identity"
@@ -28,12 +29,28 @@ type placeService interface {
 	GetDetail(ctx context.Context, id string, limit int, offset int, viewerID *string) (*place.Detail, error)
 }
 
+// thumbMeasurer measures a checkpoint's thumbnails on demand, for media that
+// predates the thumb_width/thumb_height columns or that the backfill has not
+// reached yet. Optional — nil simply means the card omits the dimensions.
+type thumbMeasurer interface {
+	MeasureCheckpoint(ctx context.Context, checkpointID string) (map[string]checkpoint.ThumbSize, error)
+}
+
 // Service provides share-specific data aggregation logic.
 type Service struct {
 	checkpointSvc checkpointService
 	journeySvc    journeyService
 	identitySvc   identityService
 	placeSvc      placeService
+	measurer      thumbMeasurer
+}
+
+// WithThumbMeasurer attaches the on-demand thumbnail measurer. Without it,
+// share cards fall back to omitting og:image:width/height for media whose size
+// was never recorded.
+func (s *Service) WithThumbMeasurer(m thumbMeasurer) *Service {
+	s.measurer = m
+	return s
 }
 
 // NewService constructs a new Share Service.
@@ -55,6 +72,11 @@ type MetaData struct {
 	// TwitterCard is "summary_large_image" for wide photos and "summary" for
 	// square art such as avatars, which crops badly in the large card.
 	TwitterCard string
+	// ImageWidth/ImageHeight are Image's pixel dimensions, 0 when unknown.
+	// Messenger, and Facebook on a first uncached scrape, frequently render no
+	// preview image without them, because neither blocks on fetching the image.
+	ImageWidth  int
+	ImageHeight int
 	URL         string
 	RedirectURL string
 }
@@ -101,10 +123,14 @@ func (s *Service) GetCheckpointMeta(ctx context.Context, id, frontendURL string)
 		}
 	}
 
+	width, height := s.thumbSize(ctx, detail, image)
+
 	return &MetaData{
 		Title:       title,
 		Description: description,
 		Image:       image,
+		ImageWidth:  width,
+		ImageHeight: height,
 		Type:        "article",
 		TwitterCard: cardLarge,
 		URL:         fmt.Sprintf("%s/c/%s", frontendURL, id),
@@ -228,4 +254,49 @@ func (s *Service) GetPlaceMeta(ctx context.Context, id, frontendURL string) (*Me
 		URL:         fmt.Sprintf("%s/p/%s", frontendURL, id),
 		RedirectURL: fmt.Sprintf("%s/p/%s", frontendURL, id),
 	}, nil
+}
+
+// thumbSize resolves the pixel dimensions of the image the card will advertise.
+//
+// It matches the chosen URL back to the media row it came from, since the
+// checkpoint's denormalized cover is a copy of one of its images' thumbnails.
+// When that row has no recorded size — media older than the columns, or an
+// image thumbnail, which clients upload directly so the server never sees the
+// bytes — it measures once and persists, so only the first share of a given
+// checkpoint pays for it.
+//
+// Returns 0, 0 when the size cannot be determined; callers omit the tags rather
+// than guessing, since a wrong size is worse than none.
+func (s *Service) thumbSize(ctx context.Context, detail *checkpoint.Detail, image string) (width, height int) {
+	img := imageForURL(detail, image)
+	if img == nil {
+		return 0, 0 // the static fallback card, or the full-size original
+	}
+	if img.ThumbWidth != nil && img.ThumbHeight != nil {
+		return *img.ThumbWidth, *img.ThumbHeight
+	}
+	if s.measurer == nil {
+		return 0, 0
+	}
+
+	sizes, err := s.measurer.MeasureCheckpoint(ctx, detail.Checkpoint.ID)
+	if err != nil {
+		log.Printf("share: measure thumbnails for %s: %v", detail.Checkpoint.ID, err)
+		return 0, 0
+	}
+	if size, ok := sizes[img.ID]; ok {
+		return size.Width, size.Height
+	}
+	return 0, 0
+}
+
+// imageForURL finds the media row whose thumbnail is the given URL.
+func imageForURL(detail *checkpoint.Detail, url string) *checkpoint.Image {
+	for i := range detail.Images {
+		img := &detail.Images[i]
+		if img.ThumbnailURL != nil && *img.ThumbnailURL == url {
+			return img
+		}
+	}
+	return nil
 }

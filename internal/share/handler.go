@@ -26,6 +26,10 @@ var shareTemplate = template.Must(template.New("share").Parse(`<!DOCTYPE html>
     <meta property="og:image" content="{{.Image}}">
     <meta property="og:image:secure_url" content="{{.Image}}">
     <meta property="og:image:alt" content="{{.Title}}">
+{{- if and .ImageWidth .ImageHeight}}
+    <meta property="og:image:width" content="{{.ImageWidth}}">
+    <meta property="og:image:height" content="{{.ImageHeight}}">
+{{- end}}
     <meta property="og:type" content="{{.Type}}">
     <meta property="og:url" content="{{.URL}}">
     <meta property="og:site_name" content="Checkpoint">

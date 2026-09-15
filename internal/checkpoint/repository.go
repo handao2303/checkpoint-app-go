@@ -317,12 +317,90 @@ func (r *Repository) PendingMedia(ctx context.Context, checkpointID string) ([]p
 	return out, rows.Err()
 }
 
-// SetMediaThumbnail records the processed thumbnail key for a media row. Setting
-// thumbnail_key is the "done" marker — the row is no longer considered pending.
-func (r *Repository) SetMediaThumbnail(ctx context.Context, imageID, thumbnailKey string) error {
+// SetMediaThumbnail records the processed thumbnail key and its pixel dimensions
+// for a media row. Setting thumbnail_key is the "done" marker — the row is no
+// longer considered pending. Width/height of 0 store NULL, leaving the row for
+// the backfill to measure.
+func (r *Repository) SetMediaThumbnail(ctx context.Context, imageID, thumbnailKey string, width, height int) error {
 	if _, err := r.db.Exec(ctx,
-		`UPDATE checkpoint_images SET thumbnail_key = $2 WHERE id = $1`, imageID, thumbnailKey); err != nil {
+		`UPDATE checkpoint_images
+		    SET thumbnail_key = $2,
+		        thumb_width   = NULLIF($3::int, 0),
+		        thumb_height  = NULLIF($4::int, 0)
+		  WHERE id = $1`, imageID, thumbnailKey, width, height); err != nil {
 		return fmt.Errorf("set media thumbnail: %w", err)
+	}
+	return nil
+}
+
+// UnmeasuredThumb is one thumbnail awaiting dimension measurement.
+type UnmeasuredThumb struct {
+	ImageID      string
+	ThumbnailKey string
+}
+
+// ThumbnailsMissingDimensions pages through media rows that have a thumbnail but
+// no recorded size, oldest first. afterID is the last id of the previous page
+// (empty for the first page); paging by id keeps the scan stable while the
+// backfill writes.
+func (r *Repository) ThumbnailsMissingDimensions(ctx context.Context, afterID string, limit int) ([]UnmeasuredThumb, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, thumbnail_key
+		  FROM checkpoint_images
+		 WHERE thumbnail_key IS NOT NULL
+		   AND thumb_width IS NULL
+		   AND ($1 = '' OR id > $1::uuid)
+		 ORDER BY id
+		 LIMIT $2`, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list unmeasured thumbnails: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UnmeasuredThumb
+	for rows.Next() {
+		var t UnmeasuredThumb
+		if err := rows.Scan(&t.ImageID, &t.ThumbnailKey); err != nil {
+			return nil, fmt.Errorf("scan unmeasured thumbnail: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// UnmeasuredThumbsForCheckpoint lists one checkpoint's thumbnails that have no
+// recorded size, in cover order (the cover is the first row).
+func (r *Repository) UnmeasuredThumbsForCheckpoint(ctx context.Context, checkpointID string) ([]UnmeasuredThumb, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, thumbnail_key
+		  FROM checkpoint_images
+		 WHERE checkpoint_id = $1
+		   AND thumbnail_key IS NOT NULL
+		   AND thumb_width IS NULL
+		 ORDER BY sort_order, created_at`, checkpointID)
+	if err != nil {
+		return nil, fmt.Errorf("list unmeasured thumbnails for checkpoint: %w", err)
+	}
+	defer rows.Close()
+
+	var out []UnmeasuredThumb
+	for rows.Next() {
+		var t UnmeasuredThumb
+		if err := rows.Scan(&t.ImageID, &t.ThumbnailKey); err != nil {
+			return nil, fmt.Errorf("scan unmeasured thumbnail: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// SetThumbDimensions records a measured thumbnail size without touching any
+// other column — used by the backfill, which must not disturb live rows.
+func (r *Repository) SetThumbDimensions(ctx context.Context, imageID string, width, height int) error {
+	if _, err := r.db.Exec(ctx,
+		`UPDATE checkpoint_images SET thumb_width = $2, thumb_height = $3 WHERE id = $1`,
+		imageID, width, height); err != nil {
+		return fmt.Errorf("set thumb dimensions: %w", err)
 	}
 	return nil
 }
@@ -688,7 +766,8 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		        c.place_id, c.journey_id, c.xp_awarded, c.view_count, c.taken_at, c.created_at, c.updated_at,
 		        c.image_key, c.thumbnail_key,
 		        u.username, u.display_name, u.avatar_key,
-		        ci.id, ci.object_key, ci.thumbnail_key, ci.media_type, ci.sort_order
+		        ci.id, ci.object_key, ci.thumbnail_key, ci.media_type, ci.sort_order,
+		        ci.thumb_width, ci.thumb_height
 		 FROM checkpoints c
 		 JOIN users u ON u.id = c.user_id
 		 LEFT JOIN checkpoint_images ci ON ci.checkpoint_id = c.id
@@ -707,12 +786,14 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 		var cpImageKey, cpThumbnailKey *string
 		var mediaType *string
 		var sortOrder *int
+		var thumbWidth, thumbHeight *int
 		if err := rows.Scan(
 			&cp.ID, &cp.UserID, &cp.Name, &cp.Category, &cp.Note, &cp.Rating, &cp.Lat, &cp.Lng,
 			&cp.Address, &cp.PlaceID, &cp.JourneyID, &cp.XPAwarded, &cp.ViewCount, &cp.TakenAt, &cp.CreatedAt, &cp.UpdatedAt,
 			&cpImageKey, &cpThumbnailKey,
 			&author.Username, &author.DisplayName, &author.AvatarURL,
 			&imageID, &objectKey, &thumbnailKey, &mediaType, &sortOrder,
+			&thumbWidth, &thumbHeight,
 		); err != nil {
 			return nil, fmt.Errorf("scan checkpoint detail: %w", err)
 		}
@@ -740,6 +821,7 @@ func (r *Repository) GetDetail(ctx context.Context, id string) (*Detail, error) 
 			if thumbnailKey != nil {
 				thumbnailURL := storage.PublicURL(r.mediaBase, *thumbnailKey)
 				img.ThumbnailURL = &thumbnailURL
+				img.ThumbWidth, img.ThumbHeight = thumbWidth, thumbHeight
 			} else {
 				// No thumbnail yet → still being processed by the media worker.
 				img.Pending = true
